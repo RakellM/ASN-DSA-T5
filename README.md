@@ -6,4 +6,5 @@ Data Science Analytics - Certificate Studies
 
 ## Aula 02
 2025-02-05 - GitHub
-Instalação no ambiente Mac
+Instalação Mac
+Instalação Linux
