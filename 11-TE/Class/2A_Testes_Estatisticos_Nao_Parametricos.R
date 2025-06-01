@@ -62,7 +62,7 @@ binom.test(12, 30, p = 0.5, conf.level = 0.95)
 ### Testar se p>0.2 com nivel de significância de 5%.
 ### H0: p = 0,2
 ### H1: p > 0,2
-
+binom.test(20, 50, p = 0.2, conf.level = 0.95, alternative = "greater") 
 
 # Teste qui-quadrado (nominal ou ordinal) para uma amostra 
 
