@@ -16,3 +16,7 @@ print("Previsão (média):", y_pred)
 print("R²:", r2)
 
 # %%
+
+
+
+# %%
