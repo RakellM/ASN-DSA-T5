@@ -11,3 +11,21 @@ Data Science Analytics - Certificate Studies
 - Homework #06
     - notas_comb.csv
 
+
+#### 1. 
+
+#### 2. 
+
+#### 3. 
+
+#### 4.
+
+#### 5. 
+
+---
+
+
+
+
+
+
