@@ -15,6 +15,7 @@ import statsmodels.api as sm
 from statsmodels.graphics.gofplots import qqplot
 
 from scipy.stats import boxcox 
+from statsmodels.stats.diagnostic import het_breuschpagan # varaince Breusch-Pagan Test
 
 # %%
 # KaggleHub
@@ -240,7 +241,6 @@ plt.tight_layout()
 plt.show()
 
 # %%
-
 # Perform the Shapiro-wilk test
 shapiro_test = stats.shapiro(residuals)
 print(f"Shapiro-Wilk Test: Statistic={shapiro_test.statistic}, p-value={shapiro_test.pvalue}")
@@ -254,4 +254,19 @@ else:
     print("Fail to reject the null hypothesis that the residuals are normally distributed.")
 
 # %%
+### Statistical Tests for Heteroscedasticity
+#- Breusch-Pagan Test (Best for Linear Models)
+bp_test = het_breuschpagan(model_transformed.resid, model_transformed.model.exog)
+print(f"Breusch-Pagan Test:")
+print(f"Lagrange Multiplier: {bp_test[0]:.3f}, p-value: {bp_test[1]:.3f}")
 
+# Interpret the result
+print(f"In this case, the p-value is {bp_test[1]:.4f} and with an alpha of {alpha}, we can conclude that:")
+
+if bp_test[1] < alpha:
+    print("Reject the null hypothesis that the residuals are distributed with equal variance\n(heteroscedasticity is present).")
+else:
+    print("Fail to reject the null hypothesis that the residuals are distributed with equal variance\n(homoscedasticity is present).")
+
+
+# %%
