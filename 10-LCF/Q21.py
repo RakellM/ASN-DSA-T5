@@ -8,6 +8,10 @@ import os
 import matplotlib.pyplot as plt
 import seaborn as sns
 from statsmodels.stats.outliers_influence import variance_inflation_factor
+import statsmodels.api as sm
+from statsmodels.graphics.gofplots import qqplot
+from scipy import stats # Shapiro-Wilk Normality Test
+from scipy.stats import boxcox 
 
 # %%
 # DATASET
@@ -72,7 +76,7 @@ summary_stats['mpg']
 # %%
 ## DATA VISUALIZATION
 df_plot = df1.copy()
-variable = 'mpg'  # Variable to plot
+variable = 'displacement'  # Variable to plot
 
 #- Histogram & Boxplot
 fig, (ax1, ax2) = plt.subplots(2, 1, 
@@ -107,6 +111,12 @@ df2['origin_desc'] = df2['origin'].cat.rename_categories({1: '1_USA',
                                                           2: '2_Europe',
                                                           3: '3_Japan'})
 
+df2['origin2'] = df2['origin'].astype('int64').replace({1: 1, 2: 2, 3: 2})
+
+df2['origin_US'] = df2['origin2'].astype('category').cat.rename_categories({1: '1_USA',
+                                                         2: '2_NonUS',
+                                                         3: '2_NonUS'})
+
 df2['cylinders2'] = df2['cylinders'].astype('int64').replace({3: 4, 4: 4, 5: 4, 6: 6, 8: 8})
 
 #- Create Age of the car comparing to 2025
@@ -136,6 +146,14 @@ df2['vehicle_class'] = pd.cut(df2['weight'],
                            labels=['1_light', '2_medium', '3_heavy'])
 
 # %%
+#### Box-Cox transformation
+#- Apply Box-Cox transformation to the 'mpg' variable
+df2['mpg_boxcox'], lambda_value = boxcox(df2['mpg'])
+
+#- Print the lambda value
+print(f"Lambda value for Box-Cox transformation: {lambda_value}")
+
+# %%
 #- Count of observations per level
 vehicle_class_counts = df2['vehicle_class'].value_counts()
 print("Count of vehicle class:")
@@ -144,40 +162,59 @@ print(vehicle_class_counts)
 # %%
 #### Dummys
 #- Convert categorical to dummy variables
-df2 = pd.get_dummies(df2, columns=['cylinders2', 'origin_desc', 'vehicle_class'], drop_first=True)
+df3 = pd.get_dummies(df2, 
+                     columns=['cylinders2', 'origin_desc', 'vehicle_class', 'origin_US'], 
+                     drop_first=True)
 
-df2.info()
+df3.info()
 
 # %%
-df3 = df2.copy()
+df4 = df3.copy()
 
 #- Remove missings from horsepower
-df3 = df3.dropna(subset=['horsepower'])
+df4 = df4.dropna(subset=['horsepower'])
 
 #- Remove non-predictive columns
-df3 = df3.drop(['car_name', 
+#- play with which variables are in the model
+df4 = df4.drop(['car_name', 
                 'origin', 
                 'cylinders', 
                 'model_year',
-                #'displacement',
-                #'horsepower',
-                #'weight',
-                #'acceleration',
-                #'structural_factor' ,
-                #'engine_stress'
+                'displacement',
+                'horsepower',
+                'weight',
+                'acceleration',
+                # 'car_age',
+                # 'power_to_weight',
+                'engine_stress',
+                # 'cylinder_opt',
+                'dynamic_response',
+                'structural_factor' ,
+                'cylinders2_6',
+                'cylinders2_8',
+                # 'origin_desc_2_Europe',
+                # 'origin_desc_2_Japan',
+                # 'vehicle_class_2_medium',
+                # 'vehicle_class_3_heavy' ,
+                'origin2' ,
+                'origin_US_2_NonUS' ,
+                # 'mpg_boxcox' ,
+                'mpg'
                 ], axis=1)
+
+df4.info()
 
 # %%
 ### Correlation Matriz
 #- Plot correlation heatmap
 plt.figure(figsize=(12,8))
-sns.heatmap(df3.corr(), annot=True, cmap='coolwarm', center=0)
+sns.heatmap(df4.corr(), annot=True, cmap='coolwarm', center=0)
 plt.title("Feature Correlation Matrix")
 plt.show()
 
 # %%
 #- Identify high correlations (absolute value > 0.7)
-high_corr = df3.corr().abs().stack().reset_index()
+high_corr = df4.corr().abs().stack().reset_index()
 high_corr = high_corr[high_corr[0] > 0.7]
 high_corr = high_corr[high_corr['level_0'] != high_corr['level_1']]
 print("\nHighly Correlated Features:")
@@ -186,7 +223,8 @@ print(high_corr)
 # %%
 ### VIF
 #- Calculate VIF for each feature
-X_vif = df3.drop('mpg', axis=1).select_dtypes(include=['int64','float64'])
+var_Y = 'mpg_boxcox'
+X_vif = df4.drop(var_Y, axis=1).select_dtypes(include=['int64','float64'])
 vif_data = pd.DataFrame()
 vif_data["Feature"] = X_vif.columns
 vif_data["VIF"] = [variance_inflation_factor(X_vif.values.astype('float'), i) 
@@ -197,10 +235,109 @@ print(vif_data.sort_values("VIF", ascending=False))
 
 #- Remove features with VIF > 5
 high_vif = vif_data[vif_data["VIF"] > 5]["Feature"].tolist()
-df_filtered = df3.drop(high_vif, axis=1)
+df_filtered = df4.drop(high_vif, axis=1)
 print(f"\nRemoved features due to high VIF: {high_vif}")
 
 
+# %%
+## MODEL
+### Model 1
+X = df3.drop('mpg', axis=1).astype('float64')
+X = sm.add_constant(X) 
+y = df3['mpg']
 
+model = sm.OLS(y, X).fit()
+print(model.summary())
 
 # %%
+### Model 2
+#- remove power-to-weight
+X = X.drop('power_to_weight', axis=1)
+# X = X.drop('cylinder_opt', axis=1)
+# X = sm.add_constant(X) 
+
+model = sm.OLS(y, X).fit()
+print(model.summary())
+
+# %%
+### Model 3
+X = df4.drop(['mpg_boxcox'], axis=1).astype('float64')
+X = sm.add_constant(X) 
+y = df4['mpg_boxcox']
+
+model = sm.OLS(y, X).fit()
+print(model.summary())
+
+# %%
+### Model 4
+X = df4.drop(['mpg_boxcox', 'cylinder_opt'], axis=1).astype('float64')
+X = sm.add_constant(X) 
+y = df4['mpg_boxcox']
+
+model = sm.OLS(y, X).fit()
+print(model.summary())
+
+# %%
+## Residual Analysis
+#- Residuals
+residuals = model.resid
+
+#- Fitted values
+fitted = model.fittedvalues
+
+std_residuals = model.get_influence().resid_studentized_internal
+leverage = model.get_influence().hat_matrix_diag
+sqrt_abs_residuals = np.sqrt(np.abs(std_residuals))
+
+# %%
+### Residual Analysis Plots
+#- Create a 2x2 subplot grid
+fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+
+#- 1. Residuals vs. Fitted
+sns.scatterplot(x=fitted, y=residuals, ax=axes[0, 0])
+axes[0, 0].axhline(y=0, color='r', linestyle='--')
+axes[0, 0].set_title('Residuals vs Fitted')
+axes[0, 0].set_xlabel('Fitted Values')
+axes[0, 0].set_ylabel('Residuals')
+
+#- 2. Normal Q-Q Plot
+qqplot(residuals, line='s', ax=axes[0, 1], marker='o', linestyle='none')
+axes[0, 1].set_title('Normal Q-Q')
+axes[0, 1].set_xlabel('Theoretical Quantiles')
+axes[0, 1].set_ylabel('Standardized Residuals')
+
+#- 3. Scale-Location Plot
+sns.scatterplot(x=fitted, y=sqrt_abs_residuals, ax=axes[1, 0])
+axes[1, 0].set_title('Scale-Location')
+axes[1, 0].set_xlabel('Fitted Values')
+axes[1, 0].set_ylabel('√|Standardized Residuals|')
+
+#- 4. Residuals vs. Leverage
+sns.scatterplot(x=leverage, y=std_residuals, ax=axes[1, 1])
+axes[1, 1].axhline(y=0, color='r', linestyle='--')
+axes[1, 1].set_title('Residuals vs Leverage')
+axes[1, 1].set_xlabel('Leverage')
+axes[1, 1].set_ylabel('Standardized Residuals')
+
+#- Adjust layout
+plt.tight_layout()
+plt.show()
+
+# %%
+### Normality Test
+#- Perform the Shapiro-wilk test
+shapiro_test = stats.shapiro(residuals)
+alpha = 0.05
+print(f"Shapiro-Wilk Test: Statistic={shapiro_test.statistic}, p-value={shapiro_test.pvalue}")
+
+# Interpret the result
+print(f"In this case, the p-value is {shapiro_test.pvalue:.4f} and with an alpha of {alpha}, we can conclude that:")
+
+if shapiro_test.pvalue < alpha:
+    print("Reject the null hypothesis that the residuals are normally distributed.")
+else:
+    print("Fail to reject the null hypothesis that the residuals are normally distributed.")
+
+# %%
+
