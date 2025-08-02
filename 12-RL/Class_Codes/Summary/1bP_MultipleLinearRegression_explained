@@ -25,8 +25,8 @@ import kagglehub #- Kaggle Hub to import datasets
 #- Python does not has the selection methods built in on the most used packages.
 #- Solution here is to create these functions.
 #- Check file: linear_regression_functions.py
-from linear_regression_functions import step, charts_var_num, plot_regression_diagnostics
-# import linear_regression_functions
+# from linear_regression_functions import step, charts_var_num, plot_regression_diagnostics, hist_bins=10, figsize=(10, 6), 
+from linear_regression_functions import *
 
 # %% 
 ## DATASET
@@ -69,7 +69,7 @@ df_numeric = df.drop(["Gender", "User_ID"], axis=1)
 #- R style
 python_chart_correlation(df_numeric, 
                          hist_bins=10, 
-                         figsize=(2, 1), 
+                         figsize=(10, 6), 
                          fontsize=12, 
                          color='red', 
                          scatter_alpha=0.6)
@@ -111,13 +111,34 @@ fig = plot_regression_diagnostics(model)
 plt.show()
 
 # %%
-## MODEL Forward
+## MODEL FULL
+##################################
+#- Independent Variables (Matrix)
+X = df.drop(["Calories","User_ID", "Gender"] , axis=1)
+#- Dependent Variable (vector)
+y = df["Calories"] 
+#- Add the constant column on the X matrix
+X = sm.add_constant(X) 
+#- Adjusting the model
+model_full = sm.OLS(y, X).fit()
+#- Summary
+print(model_full.summary()) 
+#- Generate predicted
+pred_full = model_full.predict(X)
+
+
+# %%
+## MODEL Method Forward
+##################################
 ### AIC
-# Independent Variables (Matrix)
+#- Find variables X relevants to the model
+
+#- Independent Variables (Matrix)
 X = df.drop(["Calories", "User_ID", "Gender"] , axis=1)
-# Dependent Variable (vector)
+#- Dependent Variable (vector)
 y = df["Calories"]
 
+#- List of variables
 columns_forw = step(var_dependent = 'Calories', 
                     var_independent = X.columns.to_list(), 
                     dataset = df, 
@@ -126,34 +147,164 @@ columns_forw = step(var_dependent = 'Calories',
 columns_forw
 
 # %%
+#- Running the model
+
+#- Get the variable list
 X_forw = df[columns_forw['var'].to_list()[0] ]
-
+#- Add the intercept
 X_forw = sm.add_constant(X_forw)
-
+#- Run the model
 forw = sm.OLS(y, X_forw).fit()
-
+#- Summary
 print(forw.summary()) 
-
+#- Generate predicted
 pred_forw = forw.predict(X_forw)
-
-#### Done
-
 
 # %%
 ### BIC
-columns_back = step(var_dependent = 'Calories', 
+#- List of variables
+columns_forw = step(var_dependent = 'Calories', 
                     var_independent = X.columns.to_list(), 
                     dataset = df, 
                     method = 'forward', 
                     metric = 'bic') 
+columns_forw
+
+# %%
+### p-value
+#- List of variables
+columns_forw = step(var_dependent = 'Calories', 
+                    var_independent = X.columns.to_list(), 
+                    dataset = df, 
+                    method = 'forward', 
+                    metric = 'pvalue') 
+columns_forw
+
+# %%
+## MODEL Method Backward
+##################################
+### AIC
+#- Independent Variables (Matrix)
+X = df.drop(["Calories", "User_ID", "Gender"] , axis=1)
+#- Dependent Variable (vector)
+y = df["Calories"]
+
+#- List of variables
+columns_back = step(var_dependent = 'Calories', 
+                     var_independent = X.columns.to_list(), 
+                     dataset = df, 
+                     method = 'backward' ,
+                     metric = 'aic')
+columns_back
+
+# %%
+#- Running the model
+
+#- Get the variable list
+X_backw = df [ columns_back['var'].to_list()[0] ] 
+#- Add the intercept
+X_backw = sm.add_constant(X_backw)
+#- Run the model
+backw = sm.OLS(y, X_backw).fit()
+#- Summary
+print(backw.summary()) 
+#- Generate predicted
+pred_backw = backw.predict(X_backw)
+
+# %%
+### BIC
+#- List of variables
+columns_back = step(var_dependent = 'Calories', 
+                     var_independent = X.columns.to_list(), 
+                     dataset = df, 
+                     method = 'backward' ,
+                     metric = 'bic')
 columns_back
 
 # %%
 ### p-value
+#- List of variables
 columns_back = step(var_dependent = 'Calories', 
-                    var_independent = X.columns.to_list(), 
-                    dataset = df, 
-                    method = 'backward', 
-                    metric = 'pvalue') 
+                     var_independent = X.columns.to_list(), 
+                     dataset = df, 
+                     method = 'backward' ,
+                     metric = 'pvalue')
 columns_back
+
+# %%
+## MODEL Stepwise
+##################################
+### AIC
+#- Independent Variables (Matrix)
+X = df.drop(["Calories", "User_ID", "Gender"] , axis=1)
+#- Dependent Variable (vector)
+y = df["Calories"]
+
+#- List of variables
+columns_stepw = step(var_dependent = 'Calories', 
+                     var_independent = X.columns.to_list(), 
+                     dataset = df,
+                     method = 'both' ,
+                     metric = 'aic')
+columns_stepw
+
+# %%
+#- Running the model
+
+#- Get the variable list
+X_stepw = df [ columns_stepw['var'].to_list()[0] ] 
+#- Add the intercept
+X_stepw = sm.add_constant(X_stepw)
+#- Run the model
+stepw = sm.OLS(y, X_stepw).fit()
+#- Summary
+print(stepw.summary()) 
+#- Generate predicted
+pred_stepw = stepw.predict(X_stepw)
+
+# %%
+### BIC
+#- List of variables
+columns_stepw = step(var_dependent = 'Calories', 
+                     var_independent = X.columns.to_list(), 
+                     dataset = df,
+                     method = 'both' ,
+                     metric = 'bic')
+columns_stepw
+
+# %%
+### p-value
+#- List of variables
+columns_stepw = step(var_dependent = 'Calories', 
+                     var_independent = X.columns.to_list(), 
+                     dataset = df,
+                     method = 'both' ,
+                     metric = 'pvalue')
+columns_stepw
+
+# %%
+#- Running the model
+
+#- Get the variable list
+X_stepw_p = df[columns_stepw['var'].to_list()] 
+#- Add the intercept
+X_stepw_p = sm.add_constant(X_stepw_p)
+#- Run the model
+stepw_p = sm.OLS(y, X_stepw_p).fit()
+#- Summary
+print(stepw_p.summary()) 
+#- Generate predicted
+pred_stepw_p = stepw_p.predict(X_stepw_p)
+
+# %%
+#- Comparing the predited numbers for each different model
+pred_comparative = pd.DataFrame({
+'pred_model_full': pred_full,
+'pred_model_step_aic': pred_stepw,
+# 'pred_model_step_pvalue':pred_stepw_p,
+'pred_model_backw_aic': pred_backw,
+'pred_model_forw_aic': pred_forw
+})
+pred_comparative.head()
+
 # %%
