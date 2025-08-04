@@ -54,11 +54,11 @@ def select_pvalue_forward(var_dependent, var_independent, dataset, signif):
             
             if( predicted == []):
     
-                pvalue = model.pvalues.iloc[1]
+                pvalue = model.pvalues[1]
                 variable = model.pvalues.index[1]
             
             else:
-                pvalue = model.pvalues.drop(predicted).iloc[1]
+                pvalue = model.pvalues.drop(predicted)[1]
                 variable = model.pvalues.drop(predicted).index[1]
                 
             list_pvalue.append(pvalue)
@@ -248,7 +248,7 @@ def select_pvalue_backward(var_dependent, var_independent, dataset, signif):
         
         variable_general = model.pvalues.index
         
-        if(pvalue_general.values[ np.argmax(pvalue_general) ] > signif ):
+        if(pvalue_general[ np.argmax(pvalue_general) ] > signif ):
             var_independent.remove( variable_general[ np.argmax(pvalue_general) ] )
         else:
             break
