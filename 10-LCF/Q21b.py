@@ -19,7 +19,7 @@ from tabulate import tabulate # pretty tables
 from sklearn.metrics import mean_squared_error, mean_absolute_error #- error function
 from statsmodels.stats.outliers_influence import variance_inflation_factor #- VIF
 import scipy.stats as stats #- data modeling
-from scipy.stats import boxcox, boxcox_llf, boxcox_normmax
+from scipy.stats import boxcox, boxcox_llf, boxcox_normmax, skew, kurtosis
 import pylab #- QQplot
 from statsmodels.stats.diagnostic import het_breuschpagan #- Breusch-Pagan variance test
 from scipy.stats import shapiro #- Shapiro-Wilk normality test
@@ -359,12 +359,12 @@ for i, var in enumerate(vars_analyzed):
 ###########################
 remove_var = ['Gender', 
               'Body_Temp', 
-            #   'Duration', 
+              'Duration', 
               'Weight',
             #   'Height',
               'Heart_Rate',
               'caloric_eff',
-              'thermal_stress',
+            #   'thermal_stress',
             #   'Calories'
               ]
 #- Final dataset
@@ -423,6 +423,9 @@ plt.title("Feature Correlation Matrix")
 plt.show()
 
 # %%
+python_chart_correlation(df_all_adj,figsize=(12, 8))
+
+# %%
 ## VIF
 #- Calculate VIF for each feature
 var_Y = 'Calories'
@@ -479,10 +482,12 @@ step_columns
 # %%
 ### Running the model
 
-#- Get the variable list (pvalue)
+# # - Get the variable list (pvalue)
 # X_stepw_p = df_all_adj[step_columns['var'].to_list()] 
 # #- Add the intercept
 # X_stepw_p = sm.add_constant(X_stepw_p)
+
+# y = df_all_adj['Calories']
 # #- Run the model
 # stepw_p = sm.OLS(y, X_stepw_p).fit()
 # #- Summary
@@ -495,6 +500,8 @@ step_columns
 X_stepw = df_all_adj[ step_columns['var'].to_list()[0] ] 
 #- Add the intercept
 X_stepw = sm.add_constant(X_stepw)
+
+y = df_all_adj['Calories']
 #- Run the model
 stepw = sm.OLS(y, X_stepw).fit()
 #- Summary
@@ -510,27 +517,139 @@ plot_regression_diagnostics(stepw,
                             lowess_frac=0.4, 
                             point_size=20, 
                             alpha=0.6, 
-                            cook_thresholds=(0.5, 1))
+                            cook_thresholds=(0.5, 1));
+
+# %%
+## Thinking about Transformations on Xs
+df_transf1 = df2.copy()
+
+#- Add cluster numbers
+df_transf1['cluster'] = kmeans.labels_
+
+### Dummys
+#- Generic dummy creation: choose reference cluster and auto order
+#- Define mapping for cluster labels
+cluster_label_map = {
+    0: '0_Veteran_Athletes',
+    1: '1_Young_Sedentary',
+    2: '2_Elite_Athletes',
+    3: '3_Short_Veterans',
+    4: '4_Light_Fitness'
+}
+
+#- Choose the reference cluster
+reference_cluster = 3
+
+#- Map cluster numbers to group names
+df_transf1['Group'] = df_transf1['cluster'].map(cluster_label_map)
+
+#- Create ordered group labels
+ordered_group_labels = [
+    cluster_label_map[reference_cluster],  #- Reference first (will be dropped)
+    *[cluster_label_map[c] for c in sorted(cluster_label_map) if c != reference_cluster]
+]
+
+#- Set Group as categorical with desired order
+df_transf1['Group'] = pd.Categorical(
+    df_transf1['Group'],
+    categories=ordered_group_labels,
+    ordered=True
+)
+
+#- Create dummies, dropping the reference group
+df_transf1 = pd.get_dummies(
+    df_transf1,
+    columns=['Group'],
+    drop_first=True,  #- Drops '4_Light_Fitness' (reference)
+    dtype=int  
+)
+
+df_transf1 = df_transf1.drop(['cluster'], axis=1)
+
+df_transf1['Age_log'] = np.log(df_transf1['Age'])
+
+remove_var = ['Gender', 
+            #   'Age',
+              'Age_log',
+              'Body_Temp', 
+              'Duration', 
+              'Weight',
+            #   'Height',
+              'Heart_Rate',
+              'caloric_eff',
+            #   'thermal_stress',
+            #   'Calories',
+            #   'cluster',
+              ]
+
+df_transf1 = df_transf1.drop(remove_var, axis=1)
+
+df_transf1.info()
+
+# %%
+## Correlation Matrix
+#- Plot correlation heatmap
+plt.figure(figsize=(12,8))
+sns.heatmap(df_transf1.corr(), annot=True, cmap='coolwarm', center=0)
+plt.title("Feature Correlation Matrix")
+plt.show()
+
+# %%
+python_chart_correlation(df_transf1,figsize=(12, 8))
+
+# %%
+## Stepwise
+step_columns = step(var_dependent='Calories', 
+                    var_independent= df_transf1.drop(['Calories'], axis = 1).columns.to_list(), 
+                    dataset = df_transf1, 
+                    method = 'both' ,
+                    metric='aic', 
+                    signif=0.05)
+step_columns
+
+# %%
+#- Get the variable list
+X_stepw = df_transf1[ step_columns['var'].to_list()[0] ] 
+#- Add the intercept
+X_stepw = sm.add_constant(X_stepw)
+
+y = df_transf1['Calories']
+#- Run the model
+stepw = sm.OLS(y, X_stepw).fit()
+#- Summary
+print(stepw.summary()) 
+#- Generate predicted
+pred_stepw = stepw.predict(X_stepw)
+
+# %%
+### Residual Analysis
+plot_regression_diagnostics(stepw, 
+                            figsize=(12, 8), 
+                            lowess_frac=0.4, 
+                            point_size=20, 
+                            alpha=0.6, 
+                            cook_thresholds=(0.5, 1));
+
 
 # %%
 #### Box-Cox transformation
-df_transf = df_all_adj.copy()
+df_transf2 = df_transf1.copy()
 
 #- Apply Box-Cox transformation to the 'mpg' variable
-df_transf['Calories_boxcox'], lambda_value = boxcox(df_transf['Calories'])
+df_transf2['Calories_boxcox'], lambda_value = boxcox(df_transf2['Calories'])
 
 #- Print the lambda value
 print(f"Lambda value for Box-Cox transformation: {lambda_value}")
 
 # %%
 # Get the data (must be positive)
-y = df_all_adj['Calories'].values
+y = df_transf2['Calories'].values
 
 # Find the lambda that maximizes the log-likelihood
 lambda_mle = boxcox_normmax(y, method='mle')
 
 # Compute the log-likelihood for a range of lambda values
-lambdas = np.linspace(-2, 2, 100)
+lambdas = np.linspace(-2, 4, 5000)  # Use more points and a wider range
 llf = [boxcox_llf(lmb, y) for lmb in lambdas]
 
 # Find the confidence interval (approx 95% CI: drop in log-likelihood of 1.92 from max)
@@ -541,31 +660,45 @@ ci_mask = np.array(llf) > llf_max - 1.92
 ci_lambdas = lambdas[ci_mask]
 ci_low = ci_lambdas[0]
 ci_high = ci_lambdas[-1]
-print(f"Approximate 95% confidence interval for lambda: [{ci_low:.3f}, {ci_high:.3f}]")
+print(f"Approximate 95% confidence interval for lambda: [{ci_low:.4f}, {ci_high:.4f}]")
 
-import matplotlib.pyplot as plt
+# plt.figure(figsize=(8, 5))
 plt.plot(lambdas, llf, label='Log-likelihood')
 plt.axvline(lambda_mle, color='red', linestyle='--', label=f'Lambda MLE: {lambda_mle:.2f}')
-plt.axvspan(ci_low, ci_high, color='gray', alpha=0.3, label=f'~95% CI: [{ci_low:.2f}, {ci_high:.2f}]')
-plt.annotate(f'CI Low\n{ci_low:.2f}', xy=(ci_low, llf_max-1.5), xytext=(ci_low-0.5, llf_max-3),
-             arrowprops=dict(facecolor='black', arrowstyle='->'), fontsize=9)
-plt.annotate(f'CI High\n{ci_high:.2f}', xy=(ci_high, llf_max-1.5), xytext=(ci_high+0.2, llf_max-3),
-             arrowprops=dict(facecolor='black', arrowstyle='->'), fontsize=9)
+# Highlight CI with a thick horizontal line at the top
+plt.hlines(y=llf_max + 0.5, xmin=ci_low, xmax=ci_high, color='grey', linewidth=8, label='95% CI (highlighted)')
+# Add vertical lines at CI endpoints
+plt.axvline(ci_low, color='grey', linestyle=':', linewidth=2)
+plt.axvline(ci_high, color='grey', linestyle=':', linewidth=2)
+# Optionally, keep the shaded region for context
+plt.axvspan(ci_low, ci_high, color='grey', alpha=0.15)
+# Add markers at CI endpoints
+plt.scatter([ci_low, ci_high], [llf_max, llf_max], color='grey', s=80, zorder=5)
+# Annotate CI endpoints
+plt.annotate(f'CI Low\n{ci_low:.3f}', xy=(ci_low, llf_max), xytext=(ci_low*0.96, llf_max-0.5),
+             arrowprops=dict(facecolor='grey', arrowstyle='->'), fontsize=10, color='grey')
+plt.annotate(f'CI High\n{ci_high:.3f}', xy=(ci_high, llf_max), xytext=(ci_high*1.01, llf_max-0.5),
+             arrowprops=dict(facecolor='grey', arrowstyle='->'), fontsize=10, color='grey')
 plt.xlabel('Lambda')
 plt.ylabel('Log-likelihood')
 plt.title('Box-Cox Lambda Confidence Interval')
-plt.legend()
+plt.legend(loc='lower left')
+# Zoom in on the region around the CI if it's very narrow
+margin = max(0.1, (ci_high - ci_low) * 3)
+plt.xlim(ci_low - margin, ci_high + margin)
+plt.ylim(llf_max - 10, llf_max + 2)
+plt.tight_layout()
 plt.show()
 
 # %%
 step_columns = step(var_dependent='Calories_boxcox', 
-                    var_independent= df_transf.drop(['Calories', 
-                                                     'Group_0_Veteran_Athletes',
-                                                      'Group_1_Young_Sedentary',
-                                                      'Group_2_Elite_Athletes', 
-                                                      'Group_3_Short_Veterans',
+                    var_independent= df_transf2.drop(['Calories', 
+                                                    #  'Group_0_Veteran_Athletes',
+                                                    #   'Group_1_Young_Sedentary',
+                                                    #   'Group_2_Elite_Athletes', 
+                                                    #   'Group_3_Short_Veterans',
                                                      'Calories_boxcox'], axis = 1).columns.to_list(), 
-                    dataset = df_transf, 
+                    dataset = df_transf2, 
                     method = 'both' ,
                     metric='aic', 
                     signif=0.05)
@@ -573,19 +706,19 @@ step_columns
 
 
 # %%
-X = df_transf.drop(['Calories', 
-                     'Group_0_Veteran_Athletes',
-                     'Group_1_Young_Sedentary',
-                     'Group_2_Elite_Athletes',
-                     'Group_3_Short_Veterans',
+X = df_transf2.drop(['Calories', 
+                    #  'Group_0_Veteran_Athletes',
+                    #  'Group_1_Young_Sedentary',
+                    #  'Group_2_Elite_Athletes',
+                    #  'Group_3_Short_Veterans',
                      'Calories_boxcox'], axis=1).astype('float64')
 X = sm.add_constant(X) 
-y = df_transf['Calories_boxcox']
+y = df_transf2['Calories_boxcox']
 
 model = sm.OLS(y, X).fit()
 print(model.summary())
 
-
+df_transf2['residuals'] = model.resid
 
 
 # %%
@@ -598,21 +731,58 @@ plot_regression_diagnostics(model,
                             cook_thresholds=(0.5, 1));
 
 # %%
-
-# %%
 alpha = 0.05
-# Perform the Shapiro-wilk test
-shapiro_test = stats.shapiro(model.resid)
-print(f"Shapiro-Wilk Test: Statistic={shapiro_test.statistic}, p-value={shapiro_test.pvalue}")
 
-# Interpret the result
-print(f"In this case, the p-value is {shapiro_test.pvalue:.4f} and with an alpha of {alpha}, we can conclude that:")
+## Normality Test
+sample_size = df_transf2['Calories'].count()
 
-if shapiro_test.pvalue < alpha:
+if sample_size >= 4 and sample_size <= 2000:
+    #- Perform the Shapiro-wilk test (4 <= n <= 2000)
+    shapiro_test = stats.shapiro(model.resid)
+    test_stat = shapiro_test.statistic
+    test_pvalue = shapiro_test.pvalue
+    print(f"Shapiro-Wilk Test (n={sample_size}): Statistic={test_stat:.4f}, p-value={test_pvalue:.4f}")
+else:
+    #- Perform Kolmogorov-Smirnov test (n >= 50)
+    ks_test = stats.kstest(model.resid, 'norm', 
+                           args=(model.resid.mean(), 
+                                 model.resid.std()))
+    test_stat = ks_test.statistic
+    test_pvalue = ks_test.pvalue
+    print(f"Kolmogorov-Smirnov Test (n={sample_size}): Statistic={test_stat:.4f}, p-value={test_pvalue:.4f}")
+
+
+#- Interpret the result
+print(f"In this case, the p-value is {test_pvalue:.4f} and with an alpha of {alpha}, we can conclude that:")
+
+if test_pvalue < alpha:
     print("Reject the null hypothesis that the residuals are normally distributed.")
 else:
     print("Fail to reject the null hypothesis that the residuals are normally distributed.")
 
+
+# %%
+#- Plot Histogram
+sns.histplot(data=df_transf2, x='residuals', kde=True, stat='density')
+plt.show()
+
+# %%
+#- Compare Median & Mean
+nbr_mean = df_transf2['residuals'].mean()
+nbr_median = df_transf2['residuals'].median()
+nbr_min = df_transf2['residuals'].min()
+nbr_max = df_transf2['residuals'].max()
+print(f"Mean = {nbr_mean:.4f}, Median = {nbr_median:4f}")
+print(f"Min = {nbr_min:.4f}, Max = {nbr_max:4f}")
+
+#- Kurtosis: Target: ~3
+nbr_kurtosis = kurtosis(df_transf2['residuals'], fisher=False)  # Fisher=False → target kurtosis=3
+print(f"Kurtosis = {nbr_kurtosis:.4f}")
+
+#- Skewness: Target: |skew| < 2
+nbr_skew = skew(df_transf2['residuals'])
+print(f"Skewness = {nbr_skew:.4f}")
+         
 # %%
 ### Statistical Tests for Heteroscedasticity
 #- Breusch-Pagan Test (Best for Linear Models)
@@ -628,5 +798,19 @@ if bp_test[1] < alpha:
 else:
     print("Fail to reject the null hypothesis that the residuals are distributed with equal variance\n(homoscedasticity is present).")
 
+
+# %%
+#- Quantify Heteroscedasticity Effect Size
+#- Calculate the ratio of variance across subgroups.
+#- Split data into bins (e.g., by predicted values) and compare residual variances.
+#- Interpretation:
+#- + A ratio < 2 is often tolerable.
+#- + A ratio > 5 suggests serious heteroscedasticity.
+df_transf2['fitted_bin'] = pd.qcut(model.fittedvalues, q=10)  # 10 bins
+var_ratio = (
+    df_transf2.groupby('fitted_bin', observed=True)['residuals'].var().max() / 
+    df_transf2.groupby('fitted_bin', observed=True)['residuals'].var().min()
+)
+print(f"Max/Min Variance Ratio: {var_ratio:.2f}")
 
 # %%
