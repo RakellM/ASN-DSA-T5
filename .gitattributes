@@ -2,3 +2,5 @@
 *.sql linguist-language=sql
 *.Rmd linguist-language=R
 *.rmd linguist-language=R
+*.ipynb linguist-language=py
+
