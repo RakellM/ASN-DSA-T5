@@ -280,11 +280,80 @@ loadings_varimax_df = pd.DataFrame(loadings_varimax,
                                      index=variables)
 display(loadings_varimax_df.round(4))
 
+# %%
+# Communalities
+# No Rotation
+communalities_NR = np.sum(loadings_noRotation**2, axis=1)
+communalities_NR_df = pd.DataFrame(communalities_NR, 
+                                 index=variables, 
+                                 columns=['Communalities']) 
+display(communalities_NR_df.round(4).sort_values(by='Communalities', ascending=False))
 
+# %%
+# Varimax Rotation
+communalities = np.sum(loadings_varimax**2, axis=1)
+communalities_df = pd.DataFrame(communalities, 
+                                 index=variables, 
+                                 columns=['Communalities']) 
+display(communalities_df.round(4).sort_values(by='Communalities', ascending=False))
 
+# %%
+# Comunalities Chart (sorted)
+communalities_df = communalities_df.sort_values(by='Communalities', ascending=False)
 
+plt.figure(figsize=(10, 6))
+sns.barplot(x=communalities_df.index, y='Communalities', data=communalities_df)
+plt.title('Comunalidades das Variáveis', fontsize=16)
+plt.xlabel('Variáveis', fontsize=14)
+plt.ylabel('Comunalidades', fontsize=14)
+plt.xticks(rotation=45, ha='right')
+plt.tight_layout()
+plt.show()
 
+# %%
+# Histogram of Communalities
+plt.figure(figsize=(8, 6))
+sns.histplot(communalities_df['Communalities'], bins=10, kde=True)
+plt.title('Histograma das Comunalidades', fontsize=16)
+plt.xlabel('Comunalidades', fontsize=14)
+plt.ylabel('Frequência', fontsize=14)
+plt.tight_layout()
+plt.show()
 
+# %%
+# Q9. Faça uma descrição, se for possível, dos fatores obtidos
+# Loadings Interpretation
+print("Loadings com Rotação Varimax:")
+display(loadings_varimax_df.round(4))
 
+# %%
+# Chart for loading per factor
+for i in range(n_):
+    plt.figure(figsize=(10, 6))
+
+    factor_data = loadings_varimax_df[f'Factor{i+1}'].sort_values(ascending=False)
+
+    plot_df = pd.DataFrame({
+        'variables': factor_data.index,
+        'loadings': factor_data.values,
+        'color_group': ['positive' if x >= 0 else 'negative' for x in factor_data.values]
+    })
+
+    ax = sns.barplot(x='variables', 
+                    y='loadings',
+                    hue='color_group',
+                    data=plot_df,
+                    palette={'positive': 'lightgreen', 'negative': 'coral'},
+                    legend=False)
+    
+    plt.title(f'Loadings do Fator {i+1}', fontsize=16)
+    plt.xlabel('Variáveis', fontsize=14)
+    plt.ylabel('Loadings', fontsize=14)
+    plt.xticks(rotation=45, ha='right')
+    plt.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+    plt.axhline(y=0.5, color='blue', linestyle='--', alpha=0.3)
+    plt.axhline(y=-0.5, color='blue', linestyle='--', alpha=0.3)
+    plt.tight_layout()
+    plt.show()
 
 # %%
