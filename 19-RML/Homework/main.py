@@ -4,6 +4,9 @@ import os
 import kaggle
 import pandas as pd
 
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+
 
 # %%
 ## PATH & OTHERS
@@ -116,15 +119,27 @@ print(freq_target)
 
 
 # %%
-# Create Dropout column
-df['Dropout'] = df["target"].apply(lambda x : 1 if x == "Dropout" else 0)
+# Create Retained column
+df['Retained'] = df["target"].apply(lambda x : 1 if x != "Dropout" else 0)
 
 # Category frequency count
-freq_target_status = df.groupby('Dropout').size().reset_index(name='Count')
+freq_target_status = df.groupby('Retained').size().reset_index(name='Count')
 total_entries = len(df)
 freq_target_status['Percentage'] = round((freq_target_status['Count'] / total_entries) * 100 , 2)
 
-print(freq_target_status)
+freq_target_status
+
+# %%
+#### Variable: marital_status
+# Unique categories
+print(df['marital_status'].unique())
+
+# Category frequency count
+freq_marital_status = df.groupby('marital_status').size().reset_index(name='Count')
+total_entries = len(df)
+freq_marital_status['Percentage'] = round((freq_marital_status['Count'] / total_entries) * 100 , 2)
+
+freq_marital_status
 
 
 # %%
@@ -385,20 +400,20 @@ categorical_variables = [
     "application_mode", 
     "application_order", 
     "course",
-    "attendence_daytime", 
+    # "attendence_daytime", 
     "qualification_previous", 
     "nationality",
     "qualification_mother", 
     "qualification_father",
     "occupation_mother",
     "occupation_father", 
-    "displaced_yes",
-    "special_needs_yes", 
-    "debtor_yes", 
-    "tuition_fees_up_to_date",
-    "gender_male", 
-    "scholarship_holder", 
-    "international_student_yes",
+    # "displaced_yes",
+    # "special_needs_yes", 
+    # "debtor_yes", 
+    # "tuition_fees_up_to_date",
+    # "gender_male", 
+    # "scholarship_holder", 
+    # "international_student_yes",
 ]
 
 for var in categorical_variables:
@@ -412,12 +427,152 @@ for var in categorical_variables:
 df = df.drop('target', axis=1)
 
 # %%
+### Bivariate Analysis
+
+#### Variable: marital_status
+df.groupby('marital_status')['Retained'].agg(['sum', 'count', 'mean']).sort_values('sum', ascending=False)
+
+# %%
+#### Variable: application_mode
+df.groupby('application_mode')['Retained'].agg(['sum', 'count', 'mean']).sort_values('sum', ascending=False)
+
+# %%
+#### Variable: application_order
+df.groupby('application_order')['Retained'].agg(['sum', 'count', 'mean']).sort_values('sum', ascending=False)
+
+# %%
+#### Variable: course
+df.groupby('course')['Retained'].agg(['sum', 'count', 'mean']).sort_values('sum', ascending=False)
+
+# %%
+#### Variable: attendence_daytime
+df.groupby('attendence_daytime')['Retained'].agg(['sum', 'count', 'mean']).sort_values('sum', ascending=False)
+
+# %%
+#### Variable: qualification_previous
+df.groupby('qualification_previous')['Retained'].agg(['sum', 'count', 'mean']).sort_values('sum', ascending=False)
+
+# %%
+#### Variable: nationality
+df.groupby('nationality')['Retained'].agg(['sum', 'count', 'mean']).sort_values('sum', ascending=False)
+
+# %%
+#### Variable: qualification_mother
+df.groupby('qualification_mother')['Retained'].agg(['sum', 'count', 'mean']).sort_values('sum', ascending=False)
+
+# %%
+#### Variable: qualification_father
+df.groupby('qualification_father')['Retained'].agg(['sum', 'count', 'mean']).sort_values('sum', ascending=False)
+
+# %%
+#### Variable: occupation_mother
+df.groupby('occupation_mother')['Retained'].agg(['sum', 'count', 'mean']).sort_values('sum', ascending=False)
+
+# %%
+#### Variable: occupation_father
+df.groupby('occupation_father')['Retained'].agg(['sum', 'count', 'mean']).sort_values('sum', ascending=False)
+
+# %%
+#### Variable: displaced_yes
+df.groupby('displaced_yes')['Retained'].agg(['sum', 'count', 'mean']).sort_values('sum', ascending=False)
+
+# %%
+#### Variable: special_needs_yes
+df.groupby('special_needs_yes')['Retained'].agg(['sum', 'count', 'mean']).sort_values('sum', ascending=False)
+
+# %%
+#### Variable: debtor_yes
+df.groupby('debtor_yes')['Retained'].agg(['sum', 'count', 'mean']).sort_values('sum', ascending=False)
+
+# %%
+#### Variable: tuition_fees_up_to_date
+df.groupby('tuition_fees_up_to_date')['Retained'].agg(['sum', 'count', 'mean']).sort_values('sum', ascending=False)
+
+# %%
+#### Variable: gender_male
+df.groupby('gender_male')['Retained'].agg(['sum', 'count', 'mean']).sort_values('sum', ascending=False)
+
+# %%
+#### Variable: scholarship_holder
+df.groupby('scholarship_holder')['Retained'].agg(['sum', 'count', 'mean']).sort_values('sum', ascending=False)
+
+# %%
+#### Variable: age_enrollment
+df.groupby('age_enrollment')['Retained'].agg(['sum', 'count', 'mean']).sort_values('sum', ascending=False)
+
+# %%
+#### Variable: international_student_yes
+df.groupby('international_student_yes')['Retained'].agg(['sum', 'count', 'mean']).sort_values('sum', ascending=False)
+
+# %%
+#### Variable: curricular_units_1
+# Retained
+df[df['Retained'] == 1][sem1_columns].describe().T
+
+# Dropout
+df[df['Retained'] == 0][sem1_columns].describe().T
+
+# %%
+#### Variable: curricular_units_2
+# Retained
+df[df['Retained'] == 1][sem2_columns].describe().T
+
+# Dropout
+df[df['Retained'] == 0][sem2_columns].describe().T
+
+
+# %%
+#### Variable: Macro Economics
+# Retained
+df[df['Retained'] == 1][macro_econ_columns].describe().T
+
+# Dropout
+df[df['Retained'] == 0][macro_econ_columns].describe().T
+
+
+# %%
 ## Split between Train and Test
-X = df.drop('Dropout', axis=1)
-y = df['Dropout']
+X = df.drop('Retained', axis=1)
+y = df['Retained']
 
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
 
 print(f"train target distribution: {y_train.mean():0.4f}")
 print(f" test target distribution: {y_test.mean():0.4f}")
+
+# %%
+## Pipeline
+# Step for Categorical Variables
+step_categorical = Pipeline([
+    ("imputer", SimpleImputer(strategy="most_frequent")), 
+    ("encoder", OneHotEncoder(drop="first", handle_unknown="ignore"))
+])
+
+# Step for Numerical Variables
+step_numerical = Pipeline([
+    ("imputer", SimpleImputer(strategy="median")), 
+    ("scaler", StandardScaler())
+])
+
+# Step for Boolean Variables
+boolean_variables = [
+    "attendence_daytime", 
+    "displaced_yes",
+    "special_needs_yes", 
+    "debtor_yes", 
+    "tuition_fees_up_to_date",
+    "gender_male", 
+    "scholarship_holder", 
+    "international_student_yes",
+]
+
+step_imputer_most_frequent = Pipeline([
+    ("imputer", SimpleImputer(strategy="most_frequent"))
+]) 
+
+my_pipeline = ColumnTransformer([
+    ("cat", step_categorical, categorical variables),
+    ("num", step_numerical, variaveis_numericas), 
+
+])
 
