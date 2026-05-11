@@ -1,0 +1,853 @@
+---
+title: "Módulo 2 — Representações Vetoriais"
+subtitle: "SVD · Word2Vec · NILC · Comparativo — versão R"
+author: "Prof. Gabriel Antunes | Data Science Analytics"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: flatly
+    highlight: tango
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE,
+                      fig.width=12, fig.height=6, dpi=150)
+```
+install.packages("rlang", type = "source")
+install.packages("ggrepel", type = "source")
+# Instalação e Bibliotecas
+
+```{r install, eval=FALSE}
+install.packages(c(
+  "tidyverse",  "tm",        "SnowballC",  "stopwords",
+  "irlba",      "Matrix",    "glmnet",     "caret",
+  "word2vec",   "httr2",     "jsonlite",   "ggrepel",
+  "pheatmap",   "gridExtra", "reticulate", "knitr", "kableExtra"
+))
+# Para carregar safetensors do NILC:
+# pip install safetensors  (no terminal Python)
+```
+
+```{r libs}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(tm)
+  library(SnowballC)
+  library(stopwords)
+  library(irlba)
+  library(Matrix)
+  library(glmnet)
+  library(caret)
+  library(word2vec)
+  library(httr2)
+  library(jsonlite)
+  library(ggrepel)
+  library(pheatmap)
+  library(gridExtra)
+  library(knitr)
+  library(kableExtra)
+})
+
+CORES <- c("1"="#E8553E","2"="#F59E0B","3"="#6B7280","4"="#0A8A7A","5"="#1B2B5E")
+cat("Bibliotecas carregadas!\n")
+```
+
+---
+
+# Setup — Pré-processamento (idêntico ao Módulo 1)
+
+```{r setup_dados}
+# ── Carregar dataset ──────────────────────────────────────────
+library(readr)
+df <- read_csv("C:/Users/GCA/OneDrive/Documentos/PC75/Aulas/Aula 2026/ASN Text/códigos/olist_order_reviews_dataset.csv", show_col_types=FALSE)
+
+df_texto <- df |>
+  filter(!is.na(review_comment_message),
+         str_trim(review_comment_message) != "")
+
+# ── Pré-processamento (idêntico ao Módulo 1) ──────────────────
+STOPWORDS_PT <- union(
+  stopwords::stopwords("pt", source="snowball"),
+  stopwords::stopwords("pt", source="stopwords-iso")
+) |> c("pra","pro","ta","ja","né","ai","ah","vc","vcs","tbm","tb","kk","kkk")
+
+preprocessar <- function(texto) {
+  if (is.na(texto) || str_trim(texto) == "") return("")
+  texto <- str_to_lower(texto)
+  texto <- str_remove_all(texto, "https?://\\S+|www\\.\\S+|\\S+@\\S+")
+  texto <- str_remove_all(texto, "\\d+")
+  texto <- str_remove_all(texto, "[^\\w\\s]|_")
+  tokens <- str_split(str_squish(texto), "\\s+")[[1]]
+  tokens <- tokens[!tokens %in% STOPWORDS_PT & nchar(tokens) > 2]
+  paste(wordStem(tokens, language="portuguese"), collapse=" ")
+}
+
+cat("Processando reviews...\n")
+t0 <- proc.time()["elapsed"]
+df_texto <- df_texto |>
+  mutate(texto_proc = map_chr(review_comment_message, preprocessar))
+df_clean <- df_texto |> filter(nchar(texto_proc) > 0)
+cat(sprintf("Concluído em %.1fs | Reviews válidos: %s\n",
+            proc.time()["elapsed"]-t0, format(nrow(df_clean), big.mark=".")))
+
+# ── Dataset binário (sem nota 3) ─────────────────────────────
+df_bin <- df_clean |>
+  filter(review_score != 3) |>
+  mutate(sentimento = factor(
+    if_else(review_score >= 4, "positivo", "negativo"),
+    levels = c("negativo","positivo")
+  ))
+cat(sprintf("Dataset binário: %s | %s\n",
+            format(nrow(df_bin),big.mark="."),
+            paste(names(table(df_bin$sentimento)),
+                  table(df_bin$sentimento), sep="=", collapse=", ")))
+```
+
+```{r split}
+# ── Split treino/teste (fixo para todos os experimentos) ──────
+X_raw <- df_bin$texto_proc
+y     <- df_bin$sentimento
+
+set.seed(42)
+idx_tr <- caret::createDataPartition(y, p=0.8, list=FALSE)[,1]
+X_train_raw <- X_raw[ idx_tr]; X_test_raw <- X_raw[-idx_tr]
+y_train     <- y[idx_tr];      y_test     <- y[-idx_tr]
+
+resultados <- list()
+cat(sprintf("Treino: %s | Teste: %s\n",
+            format(length(X_train_raw),big.mark="."),
+            format(length(X_test_raw), big.mark=".")))
+```
+
+---
+
+# Parte 1 — Entendendo o SVD: Exemplo Simplificado
+
+```{r svd_exemplo_frases}
+# ── Declarar frases para exemplo simplificado ─────────────────
+# Equivalente ao código Python das células 08-13
+a1 <- "O senado aprovou a nova lei hoje"
+a2 <- "os cachorros estao brincando la fora"
+a3 <- "Adoro cachorros gatos e qualquer outro animal"
+a4 <- "O Presidente esta reunido com o senado"
+a5 <- "O presidente da camara esta reunido com os governadores"
+a6 <- "Os cachorros da dri e muito lindo"
+
+dfex <- tibble(documents = c(a1,a2,a3,a4,a5,a6))
+dfex <- dfex |> mutate(texto_proc = map_chr(documents, preprocessar))
+print(dfex)
+```
+
+```{r svd_tfidf_ex}
+# ── TF-IDF do exemplo (equivale ao vectorizer Python) ─────────
+corpus_ex    <- Corpus(VectorSource(dfex$texto_proc))
+dtm_ex       <- DocumentTermMatrix(corpus_ex, control=list(weighting=weightTf))
+tfidf_ex     <- weightTfIdf(dtm_ex, normalize=FALSE)  # smooth_idf=True equiv
+dictionary_ex <- colnames(as.matrix(tfidf_ex))
+
+cat("Vocabulário do exemplo:\n")
+print(dictionary_ex)
+```
+
+```{r svd_fit_ex}
+# ── SVD com k=2 (equivale ao TruncatedSVD n_components=2) ────
+bow_matrix <- as.matrix(tfidf_ex)
+svd_ex     <- irlba(bow_matrix, nv=2)
+
+# Scores dos documentos nos 2 tópicos
+# Equivale a: lsa = svd_model.fit_transform(bow)
+lsa <- svd_ex$u %*% diag(svd_ex$d)
+colnames(lsa) <- c("topic_1","topic_2")
+```
+
+```{r svd_topicos_ex}
+# ── Ver a presença de texto por Tópico ───────────────────────
+# Equivale ao topic_encoded_dfex Python
+topic_encoded_dfex <- as_tibble(lsa) |>
+  mutate(texto_proc = dfex$texto_proc)
+print(topic_encoded_dfex[, c("texto_proc","topic_1","topic_2")])
+```
+
+```{r svd_encoding_matrix}
+# ── Ver a importância de Token por tópico ─────────────────────
+# Equivale ao encoding_matrix Python
+encoding_matrix <- as.data.frame(t(svd_ex$v))
+colnames(encoding_matrix) <- dictionary_ex
+rownames(encoding_matrix) <- c("topic_1","topic_2")
+print(t(encoding_matrix))
+```
+
+```{r svd_scatter_ex}
+# ── Visualização 2D dos documentos ───────────────────────────
+ggplot(topic_encoded_dfex, aes(topic_1, topic_2,
+       label=str_trunc(texto_proc,28))) +
+  geom_point(color="#7C3AED", size=4, alpha=0.8) +
+  ggrepel::geom_label_repel(size=3, fill="white", color="#1B2B5E",
+                             max.overlaps=20) +
+  labs(title="Espaço SVD 2D — exemplo com 6 frases",
+       subtitle="Documentos sobre política vs animais se separam naturalmente",
+       x="Componente SVD 1 (tópico 1)",
+       y="Componente SVD 2 (tópico 2)") +
+  theme_minimal(base_size=12) +
+  theme(plot.title=element_text(face="bold"))
+```
+
+---
+
+# Parte 2 — Pipeline TF-IDF → SVD/LSA na Olist
+
+## TF-IDF baseline e SVD k=400
+
+```{r baseline_e_svd}
+f1_weighted <- function(y_true, y_pred) {
+  classes <- levels(as.factor(y_true))
+  f1s <- sapply(classes, function(cls) {
+    tp <- sum(y_pred == cls & y_true == cls)
+    fp <- sum(y_pred == cls & y_true != cls)
+    fn <- sum(y_pred != cls & y_true == cls)
+    prec <- if(tp+fp == 0) 0 else tp/(tp+fp)
+    rec  <- if(tp+fn == 0) 0 else tp/(tp+fn)
+    if(prec+rec == 0) 0 else 2*prec*rec/(prec+rec)
+  })
+  # Ponderado pelo suporte (proporção de cada classe)
+  pesos <- table(y_true)[classes] / length(y_true)
+  sum(f1s * pesos)
+}
+# Equivale às células 18 do Python (BASELINE + SVD pipeline)
+resultados <- list()
+
+# ─── Construir matrizes TF-IDF ──────────────────────────────
+corpus_tr  <- Corpus(VectorSource(X_train_raw))
+corpus_te  <- Corpus(VectorSource(X_test_raw))
+dtm_tr     <- DocumentTermMatrix(corpus_tr,
+                control=list(minDocFreq=3, bounds=list(global=c(3,Inf))))
+dtm_te     <- DocumentTermMatrix(corpus_te,
+                control=list(dictionary=Terms(dtm_tr)))
+tfidf_tr   <- weightTfIdf(dtm_tr, normalize=TRUE)
+tfidf_te   <- weightTfIdf(
+  DocumentTermMatrix(corpus_te, control=list(dictionary=Terms(dtm_tr))),
+  normalize=TRUE)
+
+X_tr_sp <- sparseMatrix(i=tfidf_tr$i, j=tfidf_tr$j, x=tfidf_tr$v,
+                         dims=c(nrow(tfidf_tr), ncol(tfidf_tr)))
+X_te_sp <- sparseMatrix(i=tfidf_te$i, j=tfidf_te$j, x=tfidf_te$v,
+                         dims=c(nrow(tfidf_te), ncol(tfidf_te)))
+
+cat(sprintf("TF-IDF treino: %d docs x %d termos | Esparsidade: %.1f%%\n",
+            nrow(X_tr_sp), ncol(X_tr_sp),
+            (1-nnzero(X_tr_sp)/(nrow(X_tr_sp)*ncol(X_tr_sp)))*100))
+
+# ─── BASELINE: TF-IDF + LogReg ───────────────────────────────
+set.seed(42); t0 <- proc.time()["elapsed"]
+cv_tf <- cv.glmnet(X_tr_sp, y_train, family="binomial", alpha=0, nfolds=5)
+yp_tf <- predict(cv_tf, X_te_sp, s="lambda.1se", type="class")[,1]
+t_tf  <- proc.time()["elapsed"] - t0
+acc_tf <- mean(yp_tf == as.character(y_test))
+f1_tf  <- f1_weighted(y_test, yp_tf)
+resultados[["TF-IDF"]] <- list(acc=acc_tf, f1=f1_tf, tempo_s=t_tf)
+cat(sprintf("TF-IDF  Acc=%.2f%%  F1=%.4f  Tempo=%.1fs\n", acc_tf*100, f1_tf, t_tf))
+
+# ─── SVD/LSA k=400 + LogReg ──────────────────────────────────
+cat("Aplicando SVD k=400 (irlba)...\n")
+t0 <- proc.time()["elapsed"]
+svd400 <- irlba(X_tr_sp, nv=400)
+X_tr_svd <- svd400$u %*% diag(svd400$d)
+X_te_svd <- as.matrix(X_te_sp) %*% svd400$v
+
+# Normalizar L2 (equivale ao Normalizer do sklearn)
+nr <- sqrt(rowSums(X_tr_svd^2)); nr[nr==0]<-1; X_tr_svd_n <- X_tr_svd/nr
+nt <- sqrt(rowSums(X_te_svd^2)); nt[nt==0]<-1; X_te_svd_n <- X_te_svd/nt
+
+set.seed(42)
+cv_svd <- cv.glmnet(X_tr_svd_n, y_train, family="binomial", alpha=0)
+yp_svd <- predict(cv_svd, X_te_svd_n, s="lambda.1se", type="class")[,1]
+t_svd  <- proc.time()["elapsed"] - t0
+acc_svd <- mean(yp_svd == as.character(y_test))
+f1_svd  <- f1_weighted(y_test, yp_tf)
+resultados[["SVD k=400"]] <- list(acc=acc_svd, f1=f1_svd, tempo_s=t_svd)
+cat(sprintf("SVD k=400  Acc=%.2f%%  F1=%.4f  Tempo=%.1fs\n",
+            acc_svd*100, f1_svd, t_svd))
+cat(sprintf("\nDimensionalidade TF-IDF: %d | SVD: 400\n", ncol(X_tr_sp)))
+```
+
+## Componentes Latentes do SVD — Top Tokens (Parte 2)
+
+```{r componentes_svd} 
+library(tidytext) 
+vocab <- Terms(dtm_tr)
+cores_comp <- c("#7C3AED","#0A8A7A","#E8553E","#F59E0B","#0891B2","#059669")
+
+plots_list <- map(1:6, function(ci) {
+  vetor   <- svd400$v[, ci]
+  top_pos <- order(vetor, decreasing=TRUE)[1:10]
+  top_neg <- order(vetor)[1:10]
+  idx_all <- c(top_pos, top_neg)
+  tibble(token=vocab[idx_all], peso=vetor[idx_all], comp=ci)
+})
+df_comp <- bind_rows(plots_list)
+
+ggplot(df_comp, aes(x=reorder_within(token, peso, comp),
+                     y=peso, fill=peso>0)) +
+  geom_col(show.legend=FALSE) +
+  scale_x_reordered() +
+  scale_fill_manual(values=c("TRUE"="#0A8A7A","FALSE"="#E5E7EB")) +
+  facet_wrap(~paste("Componente", comp), scales="free", ncol=3) +
+  coord_flip() +
+  labs(title="Componentes latentes SVD — top tokens por peso",
+       x=NULL, y="Peso") +
+  theme_minimal(base_size=9) +
+  theme(plot.title=element_text(face="bold"))
+```
+
+```{r scatter_2d}
+# Projeção 2D (SVD k=2 para visualização)
+svd2d   <- irlba(X_tr_sp, nv=2)
+X_2d    <- as.matrix(X_te_sp[1:2000,]) %*% svd2d$v
+y_2d    <- as.character(y_test[1:2000])
+
+tibble(dim1=X_2d[,1], dim2=X_2d[,2], sentimento=y_2d) |>
+  ggplot(aes(dim1, dim2, color=sentimento)) +
+  geom_point(alpha=0.3, size=1.5) +
+  scale_color_manual(values=c("negativo"="#E8553E","positivo"="#1B2B5E")) +
+  labs(title="Espaço latente SVD 2D — Olist reviews",
+       subtitle="Componente 1 vs Componente 2",
+       x="Componente SVD 1", y="Componente SVD 2", color="Sentimento") +
+  theme_minimal(base_size=12) +
+  theme(plot.title=element_text(face="bold"))
+```
+
+## Variância Explicada por Número de Componentes SVD
+
+```{r variancia_explicada}
+# Equivale à célula 20 do Python — mesma lista de k testados
+n_comp <- c(4,10,15,20,50,100,150,200,250,300,350,400,450,
+            500,550,600,650,700,750,800,850,900,1000,1200,1500)
+explained <- numeric(length(n_comp))
+
+cat("Calculando variância explicada para cada k...\n\n")
+t0 <- proc.time()["elapsed"]
+for (i in seq_along(n_comp)) {
+  k <- min(n_comp[i], ncol(X_tr_sp)-1L)
+  s <- irlba(X_tr_sp, nv=k)
+  # Variância explicada = soma dos quadrados dos valores singulares / ||X||_F^2
+  var_ex <- sum(s$d^2) / sum(X_tr_sp^2)
+  explained[i] <- var_ex
+  cat(sprintf("  Número de componentes = %5d | Variância explicada = %6.2f%%\n",
+              n_comp[i], var_ex*100))
+}
+cat(sprintf("\nConcluído em %.1fs\n", proc.time()["elapsed"]-t0))
+```
+
+```{r variancia_plot}
+df_var  <- tibble(k=n_comp, var=explained*100)
+ganho   <- c(df_var$var[1], diff(df_var$var))
+
+# Gráfico 1: curva completa
+p1 <- ggplot(df_var, aes(k, var)) +
+  geom_line(color="#7C3AED", linewidth=2) +
+  geom_point(color="#7C3AED", size=3, shape=21, fill="white", stroke=2) +
+  geom_hline(yintercept=c(70,80,90),
+             linetype="dashed",
+             color=c("#E8553E","#F59E0B","#059669"),
+             alpha=0.7) +
+  annotate("text", x=max(n_comp)*0.7, y=c(72,82,92),
+           label=c("70%","80%","90%"),
+           color=c("#E8553E","#F59E0B","#059669"), size=3.5) +
+  labs(title="Variância Explicada vs Número de Componentes\n(Olist — TF-IDF 8k termos)",
+       x="Número de Componentes SVD (k)",
+       y="Variância Explicada Acumulada (%)") +
+  theme_minimal(base_size=11) +
+  theme(plot.title=element_text(face="bold"))
+
+# Gráfico 2: ganho marginal
+df_ganho <- tibble(k=factor(n_comp), ganho=ganho,
+                   cat=case_when(ganho>2~"alto",ganho>0.5~"moderado",TRUE~"marginal"))
+
+p2 <- ggplot(df_ganho, aes(k, ganho, fill=cat)) +
+  geom_col(show.legend=TRUE) +
+  scale_fill_manual(values=c("alto"="#7C3AED","moderado"="#0A8A7A",
+                              "marginal"="#E8ECF0"), name="Ganho") +
+  labs(title="Ganho Marginal de Variância por k",
+       x="k", y="Ganho (pp)") +
+  theme_minimal(base_size=11) +
+  theme(plot.title=element_text(face="bold"),
+        axis.text.x=element_text(angle=45, hjust=1, size=7))
+
+grid.arrange(p1, p2, ncol=2,
+  top="Análise de Variância Explicada — TruncatedSVD na Olist")
+```
+
+```{r variancia_tabela}
+# Tabela resumo
+limiares  <- c(70,80,90)
+atingidos <- logical(3)
+df_tabela <- tibble(k=n_comp, var=round(explained*100,2),
+                    ganho=round(ganho,2)) |>
+  mutate(recomendacao = map_chr(seq_len(n()), function(i) {
+    recs <- character(0)
+    for (j in seq_along(limiares))
+      if (!atingidos[j] && var[i] >= limiares[j]) {
+        atingidos[j] <<- TRUE
+        recs <- c(recs, paste0(limiares[j],"% atingido"))
+      }
+    if (k[i] == 400) recs <- c(recs, "usar no classificador")
+    paste(recs, collapse=" | ")
+  }))
+
+df_tabela |>
+  rename(`k`=k, `Var. Exp. (%)`=var, `Ganho (pp)`=ganho,
+         `Recomendação`=recomendacao) |>
+  kable(caption="k vs Variância Explicada") |>
+  kable_styling(bootstrap_options=c("striped","hover","condensed"),
+                full_width=FALSE) |>
+  row_spec(which(df_tabela$k==400), bold=TRUE, background="#FEF3C7")
+```
+
+---
+
+# Parte 3 — Word2Vec: Treinando no Corpus Olist
+
+```{r w2v_treino}
+# Equivale à célula 22 do Python
+corpus_tokens <- df_clean$texto_proc
+cat(sprintf("Corpus: %s documentos\n", format(length(corpus_tokens),big.mark=".")))
+cat(sprintf("Exemplo: %s\n",
+            paste(head(strsplit(corpus_tokens[42]," ")[[1]],10),collapse=" ")))
+
+# Treinar CBOW (sg=0 em Python)
+cat("\nTreinando Word2Vec CBOW...\n"); t0 <- proc.time()["elapsed"]
+w2v_cbow <- word2vec(x=corpus_tokens, type="cbow", dim=100,
+                      window=5L, min_count=3L, iter=10L,
+                      threads=4L, seed=42L)
+cat(sprintf("CBOW concluído em %.1fs | Vocab: %s\n",
+            proc.time()["elapsed"]-t0,
+            format(nrow(as.matrix(w2v_cbow)),big.mark=".")))
+
+# Treinar Skip-gram (sg=1 em Python)
+cat("Treinando Word2Vec Skip-gram...\n"); t0 <- proc.time()["elapsed"]
+w2v_sg <- word2vec(x=corpus_tokens, type="skip-gram", dim=100,
+                    window=5L, min_count=3L, iter=10L,
+                    threads=4L, seed=42L)
+cat(sprintf("Skip-gram concluído em %.1fs\n", proc.time()["elapsed"]-t0))
+
+emb_cbow <- as.matrix(w2v_cbow)
+emb_sg   <- as.matrix(w2v_sg)
+```
+
+```{r w2v_similares}
+# Equivale à célula 23 do Python — palavras similares CBOW vs Skip-gram
+palavras_alvo <- c("entreg","ruim","otim","praz")
+
+plots_sim <- map(palavras_alvo, function(palavra) {
+  dados <- map_dfr(c("CBOW","Skip-gram"), function(nome) {
+    mdl <- if(nome=="CBOW") w2v_cbow else w2v_sg
+    emb <- if(nome=="CBOW") emb_cbow else emb_sg
+    if (!palavra %in% rownames(emb)) return(tibble())
+    sim <- predict(mdl, palavra, type="nearest", top_n=6L)
+    tibble(modelo=nome, token=sim$term2, similaridade=sim$similarity)
+  })
+  if (nrow(dados)==0) return(NULL)
+  ggplot(dados, aes(x=reorder(token,similaridade),
+                     y=similaridade, fill=modelo)) +
+    geom_col(position="dodge", alpha=0.85) +
+    scale_fill_manual(values=c("CBOW"="#7C3AED","Skip-gram"="#0A8A7A")) +
+    coord_flip() +
+    labs(title=sprintf('Similares a "%s"', palavra),
+         x=NULL, y="Similaridade", fill=NULL) +
+    theme_minimal(base_size=9) +
+    theme(legend.position="bottom")
+})
+plots_sim <- Filter(Negate(is.null), plots_sim)
+if (length(plots_sim)>0)
+  do.call(grid.arrange, c(plots_sim, ncol=length(plots_sim),
+    top="Word2Vec Olist — palavras mais similares (CBOW vs Skip-gram)"))
+```
+
+```{r w2v_analogias}
+# Equivale à célula 24 do Python — analogias vetoriais
+analogias <- list(
+  list(pos=c("otim","entreg"), neg=c("ruim"),  desc="otim - ruim + entreg = ?"),
+  list(pos=c("rapid","produt"), neg=c("lent"), desc="rapid - lent + produt = ?")
+)
+cat("=== Analogias vetoriais (Word2Vec CBOW Olist) ===\n")
+for (a in analogias) {
+  tryCatch({
+    vp <- emb_cbow[rownames(emb_cbow) %in% a$pos,,drop=FALSE]
+    vn <- emb_cbow[rownames(emb_cbow) %in% a$neg,,drop=FALSE]
+    if (nrow(vp)==0 || nrow(vn)==0) stop("token fora do vocab")
+    q  <- colMeans(vp) - colMeans(vn)
+    q  <- q / sqrt(sum(q^2))
+    s  <- (emb_cbow %*% q) / sqrt(rowSums(emb_cbow^2))
+    top <- tibble(token=rownames(emb_cbow), sim=as.numeric(s)) |>
+      filter(!token %in% c(a$pos,a$neg)) |>
+      arrange(desc(sim)) |> head(5)
+    cat(sprintf("\n%s\n", a$desc))
+    for (j in 1:nrow(top))
+      cat(sprintf("  -> %-20s %.4f\n", top$token[j], top$sim[j]))
+  }, error=function(e) cat(sprintf("\n%s -> erro: %s\n", a$desc, e$message)))
+}
+```
+
+```{r w2v_mean_pooling}
+# Equivale à célula 25 do Python — mean pooling + classificador
+mean_pooling <- function(texto, emb, dim=100L) {
+  toks <- str_split(texto,"\\s+")[[1]]
+  vecs <- emb[rownames(emb) %in% toks,,drop=FALSE]
+  if (nrow(vecs)==0) return(rep(0, dim))
+  colMeans(vecs)
+}
+
+cat("Gerando embeddings (mean pooling W2V CBOW Olist)...\n")
+t0 <- proc.time()["elapsed"]
+X_tr_w2v <- t(vapply(X_train_raw, mean_pooling, numeric(100L), emb=emb_cbow))
+X_te_w2v <- t(vapply(X_test_raw,  mean_pooling, numeric(100L), emb=emb_cbow))
+cat(sprintf("Concluído em %.1fs | Shape: %s\n",
+            proc.time()["elapsed"]-t0,
+            paste(dim(X_tr_w2v),collapse=" x ")))
+
+set.seed(42); t0 <- proc.time()["elapsed"]
+cv_w2v <- cv.glmnet(X_tr_w2v, y_train, family="binomial", alpha=0)
+yp_w2v <- predict(cv_w2v, X_te_w2v, s="lambda.1se", type="class")[,1]
+t_w2v  <- proc.time()["elapsed"] - t0
+acc_w2v <- mean(yp_w2v==as.character(y_test))
+f1_w2v  <- caret::F1_Score(y_test, factor(yp_w2v,levels=levels(y_test)), positive="positivo")
+resultados[["W2V Olist CBOW"]] <- list(acc=acc_w2v, f1=f1_w2v, tempo_s=t_w2v)
+cat(sprintf("W2V Olist CBOW  Acc=%.2f%%\n", acc_w2v*100))
+```
+
+---
+
+# Parte 4 — NILC CBOW 300d via HuggingFace
+
+```{r nilc_download}
+# Equivale às células 28-29 do Python
+# Download via HuggingFace Hub (hf_hub_download em Python)
+HF_TOKEN <- Sys.getenv("HF_TOKEN")
+REPO_ID  <- "nilc-nlp/word2vec-cbow-300d"
+
+baixar_hf <- function(repo, filename, token=HF_TOKEN) {
+  url   <- sprintf("https://huggingface.co/%s/resolve/main/%s", repo, filename)
+  cache <- file.path(path.expand("~"),".cache","huggingface",
+                     gsub("/","-",repo))
+  dest  <- file.path(cache, filename)
+  if (!file.exists(dest)) {
+    dir.create(cache, showWarnings=FALSE, recursive=TRUE)
+    req <- request(url)
+    if (nchar(token)>0) req <- req_headers(req, Authorization=paste("Bearer",token))
+    cat(sprintf("Baixando %s (~360 MB na 1a execucao — proximas usam cache)...\n", filename))
+    req |> req_progress() |> req_perform(path=dest)
+  } else {
+    cat(sprintf("Cache: %s\n", dest))
+  }
+  dest
+}
+
+cat(sprintf("Baixando modelo %s...\n", REPO_ID))
+t0 <- proc.time()["elapsed"]
+emb_path   <- baixar_hf(REPO_ID, "embeddings.safetensors")
+vocab_path <- baixar_hf(REPO_ID, "vocab.txt")
+cat(sprintf("Download concluido em %.1fs\n", proc.time()["elapsed"]-t0))
+```
+
+```{r nilc_load}
+# Carregar vocabulário
+nilc_vocab <- readLines(vocab_path, encoding="UTF-8")
+
+# Carregar embeddings via reticulate + safetensors Python
+# (não existe safetensors nativo em R)
+if (!requireNamespace("reticulate", quietly=TRUE))
+  stop("Instale reticulate: install.packages('reticulate')\ne safetensors: pip install safetensors")
+
+reticulate::py_run_string(sprintf("
+from safetensors.numpy import load_file
+data = load_file('%s')
+nilc_vecs = data['embeddings'].astype('float32')
+", gsub("\\\\", "/", emb_path)))
+
+nilc_vectors <- reticulate::py$nilc_vecs
+
+cat(sprintf("Vocab: %s palavras | Dim: %d | Memória: %d MB\n",
+            format(length(nilc_vocab), big.mark="."),
+            ncol(nilc_vectors),
+            as.integer(length(nilc_vectors)*4/1024^2)))
+```
+
+```{r nilc_wrapper}
+# Classe NilcEmbeddings — equivale à classe Python das células 28-29
+# Todos os métodos: __contains__, __getitem__, similarity, most_similar, analogy
+
+nilc_word2idx <- setNames(seq_along(nilc_vocab)-1L, nilc_vocab)
+NILC_DIM      <- ncol(nilc_vectors)
+
+# Pré-normalizar (cosine via dot product)
+norms_n        <- sqrt(rowSums(nilc_vectors^2)); norms_n[norms_n==0] <- 1
+nilc_norm      <- nilc_vectors / norms_n
+
+# __contains__
+nilc_contains <- function(palavra) palavra %in% names(nilc_word2idx)
+
+# __getitem__
+nilc_get <- function(palavra) {
+  if (!nilc_contains(palavra)) stop(sprintf("'%s' nao esta no vocabulario NILC", palavra))
+  nilc_vectors[nilc_word2idx[[palavra]]+1L, ]
+}
+
+# similarity
+nilc_similarity <- function(w1, w2) {
+  for (w in c(w1,w2)) if (!nilc_contains(w)) stop(sprintf("'%s' nao esta no vocab", w))
+  sum(nilc_norm[nilc_word2idx[[w1]]+1L,] * nilc_norm[nilc_word2idx[[w2]]+1L,])
+}
+
+# most_similar (aceita positive= e negative= como no Python)
+nilc_most_similar <- function(positive, negative=character(0), topn=10L) {
+  excluir <- c(positive, negative)
+  q <- rep(0, NILC_DIM)
+  for (w in positive) {
+    if (!nilc_contains(w)) stop(sprintf("'%s' nao encontrada", w))
+    q <- q + nilc_norm[nilc_word2idx[[w]]+1L,]
+  }
+  for (w in negative) {
+    if (!nilc_contains(w)) stop(sprintf("'%s' nao encontrada", w))
+    q <- q - nilc_norm[nilc_word2idx[[w]]+1L,]
+  }
+  nq <- sqrt(sum(q^2)); if(nq>0) q <- q/nq
+  sims <- nilc_norm %*% q
+  tibble(palavra=nilc_vocab[order(sims,decreasing=TRUE)],
+         sim=as.numeric(sims[order(sims,decreasing=TRUE)])) |>
+    filter(!palavra %in% excluir) |>
+    head(topn)
+}
+
+cat(sprintf("Wrapper NILC pronto! | %s palavras | dim=%d\n",
+            format(length(nilc_vocab),big.mark="."), NILC_DIM))
+cat(sprintf("'entrega' no vocab? %s\n", nilc_contains("entrega")))
+cat(sprintf("'xablau'  no vocab? %s\n", nilc_contains("xablau")))
+cat(sprintf("sim(entrega, produto) = %.4f\n", nilc_similarity("entrega","produto")))
+```
+
+```{r nilc_similares}
+# Equivale à célula 30 do Python
+cat(strrep("=",55),"\n")
+cat("Palavras mais similares - NILC CBOW 300d\n")
+cat(strrep("=",55),"\n")
+
+palavras_alvo_nilc <- c("entrega","produto","pessimo","otimo","defeito")
+for (palavra in palavras_alvo_nilc) {
+  if (!nilc_contains(palavra)) {
+    cat(sprintf("\n[%s] fora do vocabulario NILC\n", palavra)); next
+  }
+  sim <- nilc_most_similar(palavra, topn=8L)
+  cat(sprintf("\nMais similares a '%s':\n", palavra))
+  for (j in 1:nrow(sim))
+    cat(sprintf("  %-22s %.4f  %s\n", sim$palavra[j], sim$sim[j],
+                paste(rep("|", round(sim$sim[j]*20)), collapse="")))
+}
+```
+
+```{r nilc_analogias}
+# Equivale à célula 31 do Python — analogias NILC
+cat("\n",strrep("=",55),"\n",sep="")
+cat("Analogias vetoriais - NILC CBOW 300d\n")
+cat(strrep("=",55),"\n")
+
+analogias_nilc <- list(
+  list(pos=c("rei","mulher"),    neg="homem",     desc="rei - homem + mulher"),
+  list(pos=c("produto","ruim"),  neg="bom",        desc="produto - bom + ruim"),
+  list(pos=c("brasil","ingles"), neg="portugues",  desc="brasil - portugues + ingles"),
+  list(pos=c("entrega","rapida"), neg="lenta",     desc="entrega - lenta + rapida")
+)
+for (a in analogias_nilc) {
+  tryCatch({
+    res <- nilc_most_similar(a$pos, a$neg, topn=5L)
+    cat(sprintf("\n%s =\n", a$desc))
+    for (j in 1:nrow(res))
+      cat(sprintf("  -> %-25s %.4f\n", res$palavra[j], res$sim[j]))
+  }, error=function(e) cat(sprintf("\n%s -> erro: %s\n", a$desc, e$message)))
+}
+```
+
+```{r nilc_heatmap}
+# Equivale à célula 32 do Python — heatmap de similaridade
+palavras_h <- c("entrega","produto","qualidade","preco",
+                 "defeito","atraso","otimo","pessimo")
+palavras_h <- palavras_h[sapply(palavras_h, nilc_contains)]
+n <- length(palavras_h)
+
+if (n > 1) {
+  mat <- matrix(0, n, n, dimnames=list(palavras_h,palavras_h))
+  for (i in 1:n) for (j in 1:n)
+    mat[i,j] <- nilc_similarity(palavras_h[i], palavras_h[j])
+  pheatmap(mat,
+           color=colorRampPalette(c("#E8553E","white","#059669"))(100),
+           breaks=seq(-0.1,1,length.out=101),
+           display_numbers=TRUE, number_format="%.2f",
+           fontsize_number=9, cluster_rows=FALSE, cluster_cols=FALSE,
+           main="Similaridade entre palavras — NILC CBOW 300d")
+}
+```
+
+```{r nilc_extras}
+# Equivale às células 33-37 do Python — chamadas adicionais de most_similar
+
+cat("=== wv_nilc.most_similar('china') ===\n")
+tryCatch(print(nilc_most_similar("china", topn=10L)),
+         error=function(e) cat(e$message,"\n"))
+
+cat("\n=== wv_nilc.most_similar(positive=['brasil','argentina']) ===\n")
+tryCatch(print(nilc_most_similar(c("brasil","argentina"), topn=5L)),
+         error=function(e) cat(e$message,"\n"))
+
+cat("\n=== wv_nilc.most_similar(positive=['médico']) ===\n")
+tryCatch(print(nilc_most_similar("medico", topn=5L)),
+         error=function(e) cat(e$message,"\n"))
+
+cat("\n=== wv_nilc.most_similar(positive=['rei','rainha'], negative=['homem']) ===\n")
+tryCatch(print(nilc_most_similar(c("rei","rainha"), neg="homem", topn=5L)),
+         error=function(e) cat(e$message,"\n"))
+```
+
+```{r nilc_classificador}
+# Equivale à célula 38 do Python — cobertura + mean pooling + classificador
+STOPS_SEM_STEM <- union(stopwords::stopwords("pt","snowball"),
+                         stopwords::stopwords("pt","stopwords-iso"))
+
+tokenizar_sem_stem <- function(texto) {
+  if (is.na(texto)) return(character(0))
+  texto <- str_to_lower(texto)
+  texto <- str_remove_all(texto, "https?://\\S+|\\S+@\\S+|\\d+|[^\\w\\s]|_")
+  tokens <- str_split(str_squish(texto), "\\s+")[[1]]
+  tokens[!tokens %in% STOPS_SEM_STEM & nchar(tokens)>2]
+}
+
+# Cobertura
+cat("Calculando cobertura NILC (amostra 5000 reviews)...\n")
+t0 <- proc.time()["elapsed"]
+set.seed(42)
+sample_cob <- sample(df_bin$review_comment_message, min(5000,nrow(df_bin)))
+toks_cob   <- map(sample_cob, tokenizar_sem_stem)
+n_in  <- sum(map_int(toks_cob, ~sum(.x %in% names(nilc_word2idx))))
+n_tot <- sum(map_int(toks_cob, length))
+cat(sprintf("Concluído em %.1fs\n", proc.time()["elapsed"]-t0))
+cat(strrep("-",55),"\n")
+cat(sprintf("  Sem stemming   %s tokens unicos  %.1f%% de cobertura NILC\n",
+            format(length(unique(unlist(toks_cob))),big.mark="."),
+            n_in/n_tot*100))
+
+# Mean pooling NILC
+mean_pooling_nilc <- function(texto) {
+  toks <- tokenizar_sem_stem(texto)
+  idx  <- which(toks %in% names(nilc_word2idx))
+  if (length(idx)==0) return(rep(0, NILC_DIM))
+  colMeans(nilc_vectors[sapply(toks[idx], function(w) nilc_word2idx[[w]]+1L),,
+                          drop=FALSE])
+}
+
+cat("Gerando embeddings NILC (mean pooling)...\n")
+t0 <- proc.time()["elapsed"]
+X_tr_nilc <- t(vapply(df_bin$review_comment_message[1:length(X_train_raw)],
+                       mean_pooling_nilc, numeric(NILC_DIM)))
+X_te_nilc <- t(vapply(df_bin$review_comment_message[(length(X_train_raw)+1):
+                                                     (length(X_train_raw)+length(X_test_raw))],
+                       mean_pooling_nilc, numeric(NILC_DIM)))
+cat(sprintf("Concluído em %.1fs | Shape: %s\n",
+            proc.time()["elapsed"]-t0, paste(dim(X_tr_nilc),collapse=" x ")))
+
+set.seed(42); t0 <- proc.time()["elapsed"]
+cv_nilc <- cv.glmnet(X_tr_nilc, y_train, family="binomial", alpha=0)
+yp_nilc <- predict(cv_nilc, X_te_nilc, s="lambda.1se", type="class")[,1]
+t_nilc  <- proc.time()["elapsed"] - t0
+acc_nilc <- mean(yp_nilc==as.character(y_test))
+f1_nilc  <- caret::F1_Score(y_test, factor(yp_nilc,levels=levels(y_test)), positive="positivo")
+resultados[["NILC CBOW 300d"]] <- list(acc=acc_nilc, f1=f1_nilc, tempo_s=t_nilc)
+cat(sprintf("NILC CBOW 300d  Acc=%.2f%%  F1=%.4f  Tempo=%.1fs\n",
+            acc_nilc*100, f1_nilc, t_nilc))
+```
+
+---
+
+# Parte 5 — Comparativo Final: TF-IDF vs SVD vs Word2Vec
+
+```{r comparativo_final}
+# Equivale à célula 40 do Python
+cat(strrep("=",62),"\n")
+cat(sprintf("%-22s %10s %10s %10s\n","Método","Accuracy","F1","Tempo(s)"))
+cat(strrep("-",62),"\n")
+for (nome in names(resultados)) {
+  res <- resultados[[nome]]
+  cat(sprintf("%-22s %9.2f%% %10.4f %9.1fs\n",
+              nome, res$acc*100, res$f1, res$tempo_s))
+}
+cat(strrep("=",62),"\n")
+
+df_res <- map_dfr(names(resultados), ~
+  tibble(Método=.x,
+         `Acc (%)`=round(resultados[[.x]]$acc*100,2),
+         F1=round(resultados[[.x]]$f1,4),
+         `Tempo (s)`=round(resultados[[.x]]$tempo_s,1)))
+
+df_res |>
+  kable(caption="Comparativo M2: TF-IDF vs SVD vs Word2Vec vs NILC") |>
+  kable_styling(bootstrap_options=c("striped","hover","condensed"),
+                full_width=FALSE) |>
+  row_spec(which.max(df_res$`Acc (%)`), bold=TRUE, background="#D1FAE5")
+```
+
+```{r comparativo_plot}
+df_res |>
+  pivot_longer(c(`Acc (%)`, F1), names_to="Métrica", values_to="Valor") |>
+  mutate(Método=fct_reorder(Método, Valor)) |>
+  ggplot(aes(Método, Valor,
+             fill=factor(Método, levels=unique(df_res$Método)))) +
+  geom_col(show.legend=FALSE, alpha=0.9) +
+  geom_text(aes(label=round(Valor,2)), hjust=-0.1, size=3.5) +
+  facet_wrap(~Métrica, scales="free_x") +
+  scale_fill_manual(
+    values=setNames(c("#0A8A7A","#7C3AED","#E8553E","#F59E0B","#059669"),
+                    unique(df_res$Método))) +
+  coord_flip() +
+  labs(title="Comparativo Final — Módulo 2",
+       subtitle="TF-IDF vs SVD vs Word2Vec vs NILC",
+       x=NULL, y="Valor") +
+  theme_minimal(base_size=12) +
+  theme(plot.title=element_text(face="bold"))
+```
+
+---
+
+# Tabela de Equivalências Python ↔ R
+
+```{r equiv}
+tibble(
+  Operação=c("pd.read_csv","TfidfVectorizer","TruncatedSVD(k)",
+             "Normalizer","LogisticRegression","accuracy_score","f1_score",
+             "Word2Vec(sg=0)","Word2Vec(sg=1)","mean pooling",
+             "hf_hub_download","safetensors.load_file","np.linalg.norm"),
+  Python=c("pd.read_csv('file.csv')","TfidfVectorizer(max_features=8000,min_df=3)",
+            "TruncatedSVD(n_components=k)","Normalizer(copy=False)",
+            "LogisticRegression(C=1)","accuracy_score(y,yp)","f1_score(...,'weighted')",
+            "Word2Vec(sg=0,vector_size=100)","Word2Vec(sg=1,vector_size=100)",
+            "np.mean(vecs,axis=0)","hf_hub_download(repo_id,filename)",
+            "safetensors.numpy.load_file(path)","np.linalg.norm(v,axis=1)"),
+  R=c("read_csv('file.csv')","tm::weightTfIdf(DocumentTermMatrix(...))",
+       "irlba::irlba(X, nv=k)","X / sqrt(rowSums(X^2))",
+       "glmnet::cv.glmnet(alpha=0,family='binomial')",
+       "mean(y_pred == y_true)","caret::F1_Score(y_true,y_pred)",
+       "word2vec::word2vec(type='cbow')","word2vec::word2vec(type='skip-gram')",
+       "colMeans(emb[tokens,])","httr2::request(url) |> req_perform(path=dest)",
+       "reticulate: from safetensors.numpy import load_file",
+       "sqrt(rowSums(v^2))")
+) |>
+  kable(caption="Python vs R — Módulo 2") |>
+  kable_styling(bootstrap_options=c("striped","hover"), full_width=TRUE) |>
+  column_spec(2, monospace=TRUE, background="#EEF2FF") |>
+  column_spec(3, monospace=TRUE, background="#DCFCE7")
+```
+
+---
+
+*Prof. Gabriel Antunes | Data Science Analytics | Módulo 2 — versão R*

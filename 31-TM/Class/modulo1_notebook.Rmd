@@ -1,0 +1,775 @@
+---
+title: "Módulo 1 — Fundamentos de Text Mining"
+subtitle: "Exercício Prático: Analisando Reviews da Olist com BoW e TF-IDF"
+author: "Prof. Gabriel Antunes | Data Science Analytics"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: flatly
+    highlight: tango
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width  = 12,
+  fig.height = 6,
+  dpi     = 150
+)
+```
+
+---
+
+# Versões das Bibliotecas Utilizadas
+
+> Execute esta célula primeiro para instalar e verificar todas as dependências.
+
+```{r versoes, eval=FALSE}
+# ── Instalação (execute apenas uma vez) ─────────────────────
+install.packages(c(
+  "tidyverse",   # 2.0.0  — dplyr, ggplot2, stringr, readr, tidyr, purrr
+  "tidytext",    # 0.4.2  — text mining no estilo tidy
+  "tm",          # 0.7-14 — DocumentTermMatrix, TF-IDF (espelho do sklearn)
+  "SnowballC",   # 0.7.1  — stemming Snowball (inclui português RSLP)
+  "stopwords",   # 2.3    — listas de stopwords multilíngues
+  "wordcloud",   # 2.6    — word clouds
+  "wordcloud2",  # 0.2.1  — word clouds interativos
+  "RColorBrewer",# 1.1-3  — paletas de cores
+  "caret",       # 6.0-94 — machine learning + confusion matrix
+  "glmnet",      # 4.1-8  — regressão logística regularizada (L1/L2)
+  "Matrix",      # 1.6-5  — matrizes esparsas
+  "scales",      # 1.3.0  — formatação de eixos e números
+  "viridis",     # 0.6.5  — paletas de cores perceptualmente uniformes
+  "knitr",       # 1.46   — tabelas formatadas
+  "kableExtra"   # 1.4.0  — tabelas HTML estilizadas
+))
+```
+
+```{r bibliotecas}
+# ── Carregamento das bibliotecas ─────────────────────────────
+suppressPackageStartupMessages({
+  library(tidyverse)    # 2.0.0
+  library(tidytext)     # 0.4.2
+  library(tm)           # 0.7-14
+  library(SnowballC)    # 0.7.1
+  library(stopwords)    # 2.3
+  library(wordcloud)    # 2.6
+  library(RColorBrewer) # 1.1-3
+  library(caret)        # 6.0-94
+  library(glmnet)       # 4.1-8
+  library(Matrix)       # 1.6-5
+  library(scales)       # 1.3.0
+  library(viridis)      # 0.6.5
+  library(knitr)        # 1.46
+  library(kableExtra)   # 1.4.0
+})
+
+# Verificar versões instaladas
+pkg_versoes <- c("tidyverse","tidytext","tm","SnowballC","stopwords",
+                 "wordcloud","RColorBrewer","caret","glmnet","Matrix",
+                 "scales","viridis","knitr","kableExtra")
+
+map_dfr(pkg_versoes, ~tibble(
+  Pacote  = .x,
+  Versão  = as.character(packageVersion(.x))
+)) |>
+  kable(caption = "Versões dos pacotes instalados") |>
+  kable_styling(bootstrap_options = c("striped","hover","condensed"),
+                full_width = FALSE)
+```
+
+```{r paleta}
+
+CORES_NOTAS <- c(
+  "1" = "#E8553E",
+  "2" = "#F59E0B",
+  "3" = "#6B7280",
+  "4" = "#0A8A7A",
+  "5" = "#1B2B5E"
+)
+
+cat("✅ Bibliotecas e paleta carregadas com sucesso!\n")
+```
+
+---
+
+# Parte 1 — Exploração do Dataset
+
+> **Objetivo:** entender a estrutura dos dados, distribuição de notas e
+> tamanho dos textos antes de qualquer processamento.
+
+## Carregamento
+
+```{r carregar}
+# ── Ajuste o caminho conforme necessário ─────────────────────
+CAMINHO <- "C:/Users/GCA/OneDrive/Documentos/PC75/Aulas/Aula 2026/ASN Text/códigos/olist_order_reviews_dataset.csv"
+
+df <- read_csv(CAMINHO, show_col_types = FALSE)
+
+cat(sprintf("Dimensões: %d linhas × %d colunas\n", nrow(df), ncol(df)))
+glimpse(df)
+```
+
+```{r head}
+df |> head(5) |>
+  select(review_score, review_comment_title, review_comment_message,
+         review_creation_date) |>
+  kable(caption = "Primeiras 5 linhas") |>
+  kable_styling(bootstrap_options = c("striped","hover"), full_width = TRUE)
+```
+
+## Parte 1 — Análise exploratória
+
+
+```{r p1}
+
+# a) Reviews com texto
+df_texto <- df |>
+  filter(!is.na(review_comment_message),
+         str_trim(review_comment_message) != "")
+
+cat(sprintf(
+  "Reviews com texto: %s (%.1f%% do total)\n",
+  format(nrow(df_texto), big.mark="."),
+  nrow(df_texto) / nrow(df) * 100
+))
+
+# b) Distribuição de notas
+dist_notas <- df |>
+  count(review_score, name = "n") |>
+  mutate(
+    pct    = n / sum(n) * 100,
+    barra  = strrep("█", as.integer(n / 1000))
+  )
+
+cat("\nDistribuição de notas:\n")
+walk(1:nrow(dist_notas), ~{
+  r <- dist_notas[.x,]
+  cat(sprintf("  %d★ %s %s (%.1f%%)\n",
+              r$review_score, r$barra,
+              format(r$n, big.mark="."), r$pct))
+})
+
+# c) Comprimento médio por nota
+df_texto <- df_texto |>
+  mutate(n_chars = nchar(review_comment_message))
+
+comp_por_nota <- df_texto |>
+  group_by(review_score) |>
+  summarise(
+    n          = n(),
+    media_chars = round(mean(n_chars), 1),
+    mediana_chars = round(median(n_chars), 1)
+  )
+
+cat("\nComprimento médio por nota:\n")
+print(comp_por_nota)
+```
+
+```{r viz_distribuicao}
+# ── Visualização: Distribuição de notas ─────────────────────
+p1 <- dist_notas |>
+  mutate(review_score = factor(review_score)) |>
+  ggplot(aes(x = review_score, y = n, fill = review_score)) +
+  geom_col(width = 0.7, show.legend = FALSE) +
+  geom_text(aes(label = format(n, big.mark=".")),
+            vjust = -0.5, size = 3.5, fontface = "bold") +
+  scale_fill_manual(values = CORES_NOTAS) +
+  scale_y_continuous(labels = label_number(big.mark="."),
+                     expand = expansion(mult = c(0, 0.12))) +
+  labs(
+    title    = "Distribuição de Review Score",
+    subtitle = "Dataset Olist — 100.000 reviews",
+    x        = "Nota (estrelas)", y = "Número de reviews"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face="bold"),
+        panel.grid.major.x = element_blank())
+
+p2 <- comp_por_nota |>
+  mutate(review_score = factor(review_score)) |>
+  ggplot(aes(x = review_score, y = media_chars, fill = review_score)) +
+  geom_col(width = 0.7, show.legend = FALSE) +
+  geom_text(aes(label = round(media_chars, 0)),
+            vjust = -0.5, size = 3.5, fontface = "bold") +
+  scale_fill_manual(values = CORES_NOTAS) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
+  labs(
+    title    = "Comprimento Médio do Texto por Nota",
+    subtitle = "Caracteres médios por review",
+    x        = "Nota (estrelas)", y = "Caracteres médios"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face="bold"),
+        panel.grid.major.x = element_blank())
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+
+```{r insight1}
+cat("💡 Insight: reviews negativos (1★) tendem a ser mais longos —",
+    "clientes insatisfeitos explicam mais!\n")
+```
+
+---
+
+# Parte 2 — Pré-processamento de Texto
+
+> **Objetivo:** limpar e normalizar os reviews antes de vetorizá-los.
+> Cada etapa elimina ruído que prejudicaria a qualidade das features.
+
+##  2 — Função de pré-processamento
+
+
+```{r p2 r}
+
+
+# Stopwords em português (union de múltiplas fontes)
+STOPWORDS_PT <- union(
+  stopwords::stopwords("pt", source = "snowball"),
+  stopwords::stopwords("pt", source = "stopwords-iso")
+)
+# Adicionar stopwords específicas de e-commerce
+STOPWORDS_PT <- union(STOPWORDS_PT, c(
+  "pra", "pro", "ta", "ja", "tá", "né", "ai", "ah",
+  "vc", "vcs", "tbm", "tb", "kk", "kkk", "rsrs"
+))
+
+cat(sprintf("Total de stopwords PT carregadas: %d\n", length(STOPWORDS_PT)))
+
+preprocessar <- function(texto) {
+  if (is.na(texto) || str_trim(texto) == "") return("")
+
+  # 1. Minúsculas
+  texto <- str_to_lower(texto)
+
+  # 2. Remoção de ruído
+  texto <- str_remove_all(texto, "https?://\\S+|www\\.\\S+")  # URLs
+  texto <- str_remove_all(texto, "\\S+@\\S+")                  # emails
+  texto <- str_remove_all(texto, "\\d+")                        # números
+  texto <- str_remove_all(texto, "[^\\w\\s]|_")                 # pontuação
+  texto <- str_squish(texto)                                     # espaços extras
+
+  # 3. Tokenização
+  tokens <- str_split(texto, "\\s+")[[1]]
+
+  # 4. Remove stopwords e tokens curtos (≤2 chars)
+  tokens <- tokens[!tokens %in% STOPWORDS_PT & nchar(tokens) > 2]
+
+  # 5. Stemming Snowball (melhor aproximação do RSLP em R)
+  tokens <- wordStem(tokens, language = "portuguese")
+
+  paste(tokens, collapse = " ")
+}
+
+# Teste
+exemplos <- c(
+  "Recebi meu PRODUTO muito! Rápido, adorei totalmente :)",
+  "Produto péssimo, demorou muito e veio quebrado. Nunca mais compro!",
+  "Ótimo! Chegou antes do prazo estipulado."
+)
+
+walk(exemplos, ~{
+  cat("Original  :", .x, "\n")
+  cat("Processado:", preprocessar(.x), "\n\n")
+})
+```
+
+```{r aplicar_preprocessamento}
+# ── Aplicar ao dataset (pode levar 1-2 minutos) ──────────────
+cat("Processando reviews...\n")
+inicio <- Sys.time()
+
+df_texto <- df_texto |>
+  mutate(texto_proc = map_chr(review_comment_message, preprocessar))
+
+# Remover textos vazios após processamento
+df_clean <- df_texto |>
+  filter(str_trim(texto_proc) != "")
+
+cat(sprintf(
+  "Concluído em %.1f segundos\n",
+  as.numeric(Sys.time() - inicio, units="secs")
+))
+cat(sprintf("Reviews válidos após processamento: %s\n",
+            format(nrow(df_clean), big.mark=".")))
+
+# Amostra antes/depois
+df_clean |>
+  sample_n(3, seed = 42) |>
+  select(review_score, review_comment_message, texto_proc) |>
+  mutate(
+    review_comment_message = str_trunc(review_comment_message, 80),
+    texto_proc = str_trunc(texto_proc, 80)
+  ) |>
+  kable(caption = "Amostra: antes e depois do pré-processamento") |>
+  kable_styling(bootstrap_options = c("striped","hover"), full_width = TRUE)
+```
+
+---
+
+# Parte 3 — Bag of Words
+
+> **Objetivo:** transformar os textos processados em uma matriz
+> documento-termo e analisar as palavras mais discriminativas por nota.
+
+##  3 — Matriz BoW
+
+
+```{r ex3_gabarito}
+
+
+# a) Construção do Corpus e DocumentTermMatrix (espelho do CountVectorizer)
+corpus_bow <- Corpus(VectorSource(df_clean$texto_proc))
+
+dtm_bow <- DocumentTermMatrix(
+  corpus_bow,
+  control = list(
+    minDocFreq = 3,          # min_df=3  — 
+    bounds     = list(global = c(3, Inf))
+  )
+)
+
+# Limitar ao top 5000 termos por frequência (espelho max_features=5000)
+freq_total <- colSums(as.matrix(dtm_bow))
+top5000    <- names(sort(freq_total, decreasing = TRUE)[1:min(5000, length(freq_total))])
+dtm_bow    <- dtm_bow[, top5000]
+
+esparsidade <- (1 - dtm_bow$nrow * dtm_bow$ncol / sum(dtm_bow$nrow) /
+                  sum(dtm_bow$ncol)) * 100
+
+cat(sprintf("Shape da matriz BoW: %d documentos × %d tokens\n",
+            nrow(dtm_bow), ncol(dtm_bow)))
+cat(sprintf("Esparsidade: %.1f%%\n",
+            (1 - nnzero(dtm_bow) / (nrow(dtm_bow)*ncol(dtm_bow))) * 100))
+
+# b) Top 15 tokens mais frequentes
+freq_bow    <- colSums(as.matrix(dtm_bow))
+top15       <- sort(freq_bow, decreasing = TRUE)[1:15]
+
+cat("\nTop 15 tokens mais frequentes:\n")
+imap(top15, ~cat(sprintf("  %2d. %-20s %s\n", .y, names(.x), format(.x, big.mark="."))))
+
+# c) Top tokens por nota (1★ e 5★)
+df_bow_long <- df_clean |>
+  select(review_score, texto_proc) |>
+  unnest_tokens(token, texto_proc) |>
+  filter(!token %in% STOPWORDS_PT, nchar(token) > 2)
+
+for (nota in c(1, 5)) {
+  cat(sprintf("\nTop 10 tokens em reviews de %d★:\n", nota))
+  df_bow_long |>
+    filter(review_score == nota) |>
+    count(token, sort = TRUE) |>
+    slice_head(n = 10) |>
+    print()
+}
+```
+
+```{r viz_wordcloud}
+# ── WordCloud: 1★ vs 5★ ──────────────────────────────────────
+par(mfrow = c(1, 2), mar = c(0, 0, 2, 0))
+
+for (nota in c(1, 5)) {
+  cor_principal <- if (nota == 1) "#E8553E" else "#1B2B5E"
+  paleta <- if (nota == 1) "Reds" else "Blues"
+
+  freq_nota <- df_bow_long |>
+    filter(review_score == nota) |>
+    count(token, sort = TRUE) |>
+    slice_head(n = 100)
+
+  wordcloud(
+    words      = freq_nota$token,
+    freq       = freq_nota$n,
+    max.words  = 80,
+    random.order = FALSE,
+    colors     = brewer.pal(8, paleta),
+    scale      = c(4, 0.5),
+    rot.per    = 0.1
+  )
+  title(
+    main = sprintf("Reviews %s (%d★)", if(nota==1) "Negativos" else "Positivos", nota),
+    col.main = cor_principal, cex.main = 1.4
+  )
+}
+
+par(mfrow = c(1, 1))
+```
+
+```{r viz_top_bow}
+# ── Barras: top tokens por nota ──────────────────────────────
+top_por_nota <- df_bow_long |>
+  filter(review_score %in% c(1, 5)) |>
+  count(review_score, token, sort = TRUE) |>
+  group_by(review_score) |>
+  slice_head(n = 15) |>
+  ungroup() |>
+  mutate(
+    review_score = factor(review_score),
+    token = reorder_within(token, n, review_score)
+  )
+
+ggplot(top_por_nota, aes(x = token, y = n, fill = review_score)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~review_score, scales = "free_y",
+             labeller = as_labeller(c("1"="Reviews 1★", "5"="Reviews 5★"))) +
+  scale_x_reordered() +
+  scale_fill_manual(values = c("1"="#E8553E", "5"="#1B2B5E")) +
+  scale_y_continuous(labels = label_number(big.mark=".")) +
+  coord_flip() +
+  labs(
+    title    = "Top 15 tokens por nota (frequência bruta)",
+    subtitle = "Bag of Words — sem ponderação",
+    x = NULL, y = "Frequência"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face="bold"),
+        strip.text = element_text(face="bold", size=13))
+```
+
+---
+
+# Parte 4 — TF-IDF
+
+> **Objetivo:** calcular pesos TF-IDF, comparar com BoW e identificar os
+> tokens mais discriminativos de cada nota.
+
+```{r ex4_gabarito}
+
+# a) Matriz TF-IDF (espelho do TfidfVectorizer com sublinear_tf)
+dtm_tfidf <- weightTfIdf(dtm_bow, normalize = TRUE)
+
+cat(sprintf("Shape TF-IDF: %d × %d\n", nrow(dtm_tfidf), ncol(dtm_tfidf)))
+
+# b) Comparação para 'entrega' (após stemming → 'entreg')
+stem_entrega <- wordStem("entrega", language = "portuguese")
+cat(sprintf("\nStemma de 'entrega': '%s'\n", stem_entrega))
+
+if (stem_entrega %in% colnames(dtm_bow)) {
+  media_bow   <- mean(as.matrix(dtm_bow)[,   stem_entrega])
+  media_tfidf <- mean(as.matrix(dtm_tfidf)[, stem_entrega])
+  cat(sprintf("  BoW médio   de '%s': %.4f\n", stem_entrega, media_bow))
+  cat(sprintf("  TF-IDF médio de '%s': %.4f\n", stem_entrega, media_tfidf))
+}
+
+# c) Top tokens por TF-IDF médio por nota
+# Precisamos alinhar os índices do DTM com os scores do df_clean
+df_clean_idx <- df_clean |> mutate(.row_id = row_number())
+
+tfidf_matrix <- as.matrix(dtm_tfidf)
+
+top_tfidf_por_nota <- map_dfr(c(1, 5), function(nota) {
+  idx   <- which(df_clean$review_score == nota)
+  medias <- colMeans(tfidf_matrix[idx, , drop = FALSE])
+  tibble(
+    review_score = nota,
+    token  = names(sort(medias, decreasing = TRUE)[1:10]),
+    media_tfidf = sort(medias, decreasing = TRUE)[1:10]
+  )
+})
+
+cat("\n")
+for (nota in c(1, 5)) {
+  cat(sprintf("Top 10 tokens por TF-IDF médio — %d★:\n", nota))
+  top_tfidf_por_nota |>
+    filter(review_score == nota) |>
+    mutate(rank = row_number()) |>
+    select(rank, token, media_tfidf) |>
+    print(n = 10)
+  cat("\n")
+}
+```
+
+```{r viz_tfidf}
+# ── Visualização: Top TF-IDF por nota ───────────────────────
+top_tfidf_por_nota |>
+  mutate(
+    review_score = factor(review_score),
+    token = reorder_within(token, media_tfidf, review_score)
+  ) |>
+  ggplot(aes(x = token, y = media_tfidf, fill = review_score)) +
+  geom_col(show.legend = FALSE, alpha = 0.9) +
+  facet_wrap(~review_score, scales = "free",
+             labeller = as_labeller(c("1"="Reviews 1★","5"="Reviews 5★"))) +
+  scale_x_reordered() +
+  scale_fill_manual(values = c("1"="#E8553E","5"="#1B2B5E")) +
+  coord_flip() +
+  labs(
+    title    = "Top 10 tokens por TF-IDF médio por polaridade",
+    subtitle = "Tokens mais discriminativos — peso ponderado por raridade no corpus",
+    x = NULL, y = "TF-IDF médio"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face="bold"),
+        strip.text = element_text(face="bold", size=13))
+```
+
+```{r comparativo_tfidf_bow}
+# ── Comparativo: BoW frequência vs TF-IDF (top 20 tokens globais) ───
+top20_tokens <- names(sort(colSums(tfidf_matrix), decreasing=TRUE)[1:20])
+
+tibble(
+  token       = top20_tokens,
+  freq_bow    = round(colMeans(as.matrix(dtm_bow)[, top20_tokens]), 4),
+  media_tfidf = round(colMeans(tfidf_matrix[, top20_tokens]), 4)
+) |>
+  arrange(desc(media_tfidf)) |>
+  kable(
+    caption = "Comparativo: BoW (frequência média) vs TF-IDF médio — top 20 tokens",
+    col.names = c("Token", "BoW médio", "TF-IDF médio")
+  ) |>
+  kable_styling(bootstrap_options = c("striped","hover","condensed"),
+                full_width = FALSE) |>
+  column_spec(3, color = "white",
+              background = spec_color(
+                tibble(
+                  token       = top20_tokens,
+                  freq_bow    = round(colMeans(as.matrix(dtm_bow)[, top20_tokens]), 4),
+                  media_tfidf = round(colMeans(tfidf_matrix[, top20_tokens]), 4)
+                ) |>
+                arrange(desc(media_tfidf)) |>
+                pull(media_tfidf),
+                begin=0.3, end=0.9, option="viridis"
+              ))
+```
+
+---
+
+# Parte 5 — Classificador Baseline
+
+
+```{r ex5_gabarito}
+
+# a) Rótulo binário
+df_bin <- df_clean |>
+  filter(review_score != 3) |>
+  mutate(sentimento = factor(
+    if_else(review_score >= 4, "positivo", "negativo"),
+    levels = c("negativo", "positivo")
+  ))
+
+cat(sprintf("Dataset binário: %s reviews\n", format(nrow(df_bin), big.mark=".")))
+print(table(df_bin$sentimento))
+cat(sprintf("Proporção: %.1f%% positivo / %.1f%% negativo\n",
+            mean(df_bin$sentimento=="positivo")*100,
+            mean(df_bin$sentimento=="negativo")*100))
+
+# b) Re-vetorizar com os reviews binários
+corpus_bin <- Corpus(VectorSource(df_bin$texto_proc))
+dtm_bin_raw <- DocumentTermMatrix(
+  corpus_bin,
+  control = list(minDocFreq = 3, bounds = list(global = c(3, Inf)))
+)
+dtm_bin <- weightTfIdf(dtm_bin_raw, normalize = TRUE)
+
+# Converter para Matrix esparsa (compatível com glmnet)
+X <- sparseMatrix(
+  i = dtm_bin$i, j = dtm_bin$j, x = dtm_bin$v,
+  dims = c(dtm_bin$nrow, dtm_bin$ncol),
+  dimnames = list(NULL, colnames(dtm_bin))
+)
+y <- df_bin$sentimento
+
+cat(sprintf("\nShape da matriz: %d × %d\n", nrow(X), ncol(X)))
+
+# Split estratificado (espelho train_test_split com stratify)
+set.seed(42)
+idx_pos <- which(y == "positivo")
+idx_neg <- which(y == "negativo")
+
+idx_train <- c(
+  sample(idx_pos, size = floor(0.8 * length(idx_pos))),
+  sample(idx_neg, size = floor(0.8 * length(idx_neg)))
+)
+idx_test <- setdiff(seq_len(nrow(X)), idx_train)
+
+X_train <- X[idx_train, ];  y_train <- y[idx_train]
+X_test  <- X[idx_test, ];   y_test  <- y[idx_test]
+
+cat(sprintf("Treino: %s | Teste: %s\n",
+            format(length(idx_train), big.mark="."),
+            format(length(idx_test), big.mark=".")))
+```
+
+```{r treino_modelo}
+# c) Treinamento — glmnet Logistic Regression (alpha=0 = Ridge, alpha=1 = Lasso)
+# Usamos cv.glmnet para selecionar o lambda ótimo automaticamente
+set.seed(42)
+cat("Treinando modelo (cross-validation)... pode levar ~1-2 min\n")
+inicio <- Sys.time()
+
+cv_modelo <- cv.glmnet(
+  x        = X_train,
+  y        = y_train,
+  family   = "binomial",
+  alpha    = 0,          # Ridge (equivalente ao default do sklearn C=1.0)
+  nfolds   = 5,
+  type.measure = "class"
+)
+
+cat(sprintf("Concluído em %.1f segundos\n",
+            as.numeric(Sys.time() - inicio, units="secs")))
+cat(sprintf("Lambda ótimo (1-se): %.6f\n", cv_modelo$lambda.1se))
+```
+
+```{r avaliacao}
+# d) Avaliação
+y_pred_prob <- predict(cv_modelo, newx = X_test,
+                       s = "lambda.1se", type = "response")
+y_pred      <- factor(
+  if_else(as.vector(y_pred_prob) >= 0.5, "positivo", "negativo"),
+  levels = c("negativo","positivo")
+)
+
+acc <- mean(y_pred == y_test)
+cat(sprintf("\nAccuracy: %.2f%%\n\n", acc * 100))
+
+# Relatório detalhado (espelho do classification_report do sklearn)
+cm <- confusionMatrix(y_pred, y_test, positive = "positivo")
+print(cm)
+```
+
+```{r viz_confusion_matrix}
+# Visualização da Confusion Matrix
+cm_df <- as.data.frame(cm$table)
+names(cm_df) <- c("Predito","Real","n")
+
+ggplot(cm_df, aes(x = Predito, y = Real, fill = n)) +
+  geom_tile(color = "white", linewidth = 1) +
+  geom_text(aes(label = format(n, big.mark=".")),
+            size = 8, fontface = "bold", color = "white") +
+  scale_fill_gradient(low = "#1B2B5E", high = "#0A8A7A", name = "n") +
+  labs(
+    title    = sprintf("Confusion Matrix — Accuracy %.1f%%", acc * 100),
+    subtitle = "Classificação binária: negativo (1-2★) vs positivo (4-5★)",
+    x        = "Predito", y = "Real"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title  = element_text(face="bold"),
+    legend.position = "right",
+    axis.text   = element_text(size=12, face="bold"),
+    panel.grid  = element_blank()
+  )
+```
+
+```{r desafio_coeficientes}
+# e) DESAFIO — Tokens mais discriminativos (coeficientes do modelo)
+coefs <- coef(cv_modelo, s = "lambda.1se")
+coefs_df <- tibble(
+  token = rownames(coefs)[-1],     # remove intercept
+  coef  = as.vector(coefs)[-1]
+) |>
+  filter(coef != 0) |>
+  arrange(desc(abs(coef)))
+
+cat(sprintf("Tokens com coeficiente != 0: %d\n", nrow(coefs_df)))
+
+# Top positivos e negativos
+top_pos <- coefs_df |> slice_head(n = 15)
+top_neg <- coefs_df |> arrange(coef) |> slice_head(n = 15) |> arrange(desc(abs(coef)))
+
+bind_rows(
+  top_neg |> mutate(direcao = "→ NEGATIVO"),
+  top_pos |> mutate(direcao = "→ POSITIVO")
+) |>
+  mutate(
+    token = reorder_within(token, coef, direcao)
+  ) |>
+  ggplot(aes(x = token, y = coef, fill = direcao)) +
+  geom_col(show.legend = FALSE, alpha = 0.9) +
+  facet_wrap(~direcao, scales = "free") +
+  scale_x_reordered() +
+  scale_fill_manual(values = c("→ NEGATIVO"="#E8553E","→ POSITIVO"="#1B2B5E")) +
+  coord_flip() +
+  labs(
+    title    = "Tokens com maior impacto na classificação de sentimento",
+    subtitle = "Coeficientes da Regressão Logística (glmnet Ridge)",
+    x = NULL, y = "Coeficiente"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face="bold"),
+        strip.text = element_text(face="bold", size=13))
+
+cat("\n💡 Discussão:\n")
+cat("  • Coeficientes positivos → o modelo associa esse token com reviews POSITIVOS\n")
+cat("  • Coeficientes negativos → o modelo associa esse token com reviews NEGATIVOS\n")
+cat("  • Esses coeficientes são interpretáveis — diferente do que veremos com LLMs\n")
+cat("  • No Módulo 3 veremos como Transformers entendem negação contextualmente\n")
+```
+
+---
+
+# Resumo e Análise de Erros
+
+```{r analise_erros}
+# ── Revisão qualitativa dos erros ────────────────────────────
+df_teste <- df_bin[idx_test, ] |>
+  mutate(
+    pred    = y_pred,
+    acertou = sentimento == pred
+  )
+
+erros <- df_teste |> filter(!acertou)
+
+cat(sprintf("Total de erros no teste: %s (%.1f%%)\n",
+            format(nrow(erros), big.mark="."),
+            nrow(erros) / nrow(df_teste) * 100))
+
+cat("\nExemplos de erros de classificação:\n\n")
+erros |>
+  sample_n(min(5, nrow(erros)), replace = FALSE, set.seed = 42) |>
+  select(review_score, sentimento, pred, review_comment_message) |>
+  mutate(review_comment_message = str_trunc(review_comment_message, 100)) |>
+  kable(
+    caption = "Amostras de reviews classificados incorretamente",
+    col.names = c("Score", "Real", "Predito", "Texto")
+  ) |>
+  kable_styling(bootstrap_options = c("striped","hover"), full_width = TRUE) |>
+  row_spec(which(erros |>
+    sample_n(min(5, nrow(erros))) |>
+    pull(review_score) <= 2), background = "#FFF0EE") |>
+  row_spec(0, bold = TRUE)
+```
+
+```{r resumo_final}
+# ── Tabela resumo final ───────────────────────────────────────
+tibble(
+  Métrica                      = c(
+    "Reviews com texto",
+    "Reviews válidos (pós-processamento)",
+    "Vocabulário (max features)",
+    "Esparsidade da matriz BoW",
+    "Accuracy (TF-IDF + Ridge LR)",
+    "Precision — positivo",
+    "Recall — positivo",
+    "F1-Score — positivo"
+  ),
+  Valor = c(
+    format(nrow(df_texto), big.mark="."),
+    format(nrow(df_clean), big.mark="."),
+    format(ncol(dtm_bin), big.mark="."),
+    sprintf("%.1f%%", (1 - nnzero(X) / (nrow(X)*ncol(X)))*100),
+    sprintf("%.2f%%", acc*100),
+    sprintf("%.3f", cm$byClass["Pos Pred Value"]),
+    sprintf("%.3f", cm$byClass["Sensitivity"]),
+    sprintf("%.3f", cm$byClass["F1"])
+  )
+) |>
+  kable(caption = "Resumo de resultados — Módulo 1") |>
+  kable_styling(bootstrap_options = c("striped","hover","condensed"),
+                full_width = FALSE) |>
+  row_spec(5:8, bold = TRUE, background = "#EEF2FF")
+```
+
+---
+
+*Prof. Gabriel Antunes | Data Science Analytics | Módulo 1 de 4*
