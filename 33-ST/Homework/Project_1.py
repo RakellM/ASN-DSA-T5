@@ -409,7 +409,7 @@ plt.grid(True, alpha=0.3)
 plt.show()
 
 # %%
-# Check if you have all dates in your range
+# Check if we have all dates in your range
 print(f"Date range: {df_daily['Date'].min()} to {df_daily['Date'].max()}")
 print(f"Total days in range: {(df_daily['Date'].max() - df_daily['Date'].min()).days + 1}")
 print(f"Actual rows: {len(df_daily)}")
@@ -446,3 +446,13 @@ plt.grid(True, alpha=0.3)
 plt.show()
 
 # %%
+import requests
+
+url = "https://feriadosapi.com/api/v1/feriados/nacionais?ano=2026"
+headers = {"Authorization": "Bearer YOUR_API_TOKEN"}
+
+response = requests.get(url, headers=headers)
+
+print(response.json())
+
+
