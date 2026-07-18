@@ -3,6 +3,7 @@ import requests
 import yaml
 import pandas as pd
 import os
+from datetime import datetime, timedelta
 
 ## PATH
 main_dir = os.path.join(os.path.expanduser("~"), 
@@ -17,70 +18,133 @@ export_path = os.path.join(main_dir,
                            "holidays.csv")
 
 # %%
-# load the credentials from YAML file
-with open(os.path.join(main_dir, 'credentials.yaml'), 'r') as file:
-    credentials = yaml.safe_load(file)
-
-# extract the API key
-api_key = credentials['feriados_api']['key']
-
-
-# %%
 # Map IBGE codes to their respective states
 ibge_state_map = {
-    '3550308': 'SP',  # São Paulo
+    # North Region (Região Norte)
+    '1200401': 'AC',  # Rio Branco
+    '1600303': 'AP',  # Macapá
+    '1302603': 'AM',  # Manaus
+    '1501402': 'PA',  # Belém
+    '1100205': 'RO',  # Porto Velho
+    '1400100': 'RR',  # Boa Vista
+    '1721000': 'TO',  # Palmas
+
+    # Northeast Region (Região Nordeste)
+    '2704302': 'AL',  # Maceió
+    '2927408': 'BA',  # Salvador
+    '2304400': 'CE',  # Fortaleza
+    '2111300': 'MA',  # São Luís
+    '2507507': 'PB',  # João Pessoa
+    '2611606': 'PE',  # Recife
+    '2211001': 'PI',  # Teresina
+    '2408102': 'RN',  # Natal
+    '2800308': 'SE',  # Aracaju
+
+    # Central-West Region (Região Centro-Oeste)
+    '5300108': 'DF',  # Brasília (Federal District)
+    '5208707': 'GO',  # Goiânia
+    '5103403': 'MT',  # Cuiabá
+    '5002704': 'MS',  # Campo Grande
+
+    # Southeast Region (Região Sudeste)
+    '3205309': 'ES',  # Vitória
+    '3106200': 'MG',  # Belo Horizonte
     '3304557': 'RJ',  # Rio de Janeiro
-    3106200: 'MG',  # Belo Horizonte
-    4106902: 'PR',  # Curitiba
-    4205407: 'SC',  # Florianópolis
-    4304902: 'RS',  # Porto Alegre
-    2927408: 'BA',  # Salvador
-    2611606: 'PE',  # Recife
-    2304400: 'CE',  # Fortaleza
-    5300108: 'DF',  # Brasília
+    '3550308': 'SP',  # São Paulo
+
+    # South Region (Região Sul)
+    '4106902': 'PR',  # Curitiba
+    '4205407': 'SC',  # Florianópolis
+    '4314902': 'RS',  # Porto Alegre
 }
+
+# %%
+# Main Parameters
+ibge_codes = list(ibge_state_map.keys())
+years = range(2018,2019)
+states = list(ibge_state_map.values())
+
+# %%
+# load the credentials from YAML file
+def load_api_key():
+    """Load API key from credentials file"""
+    with open(os.path.join(main_dir, 'credentials.yaml'), 'r') as file:
+        credentials = yaml.safe_load(file)
+    return credentials['feriados_api']['key']
+
+
+# %% 
+# add carnaval tuesday
+def add_carnival_tuesday(df):
+    """Add Carnival Tuesday by adding 1 day to Carnival Monday"""
+    carnival_rows = df[df['nome'].str.contains('Carnaval', case=False, na=False)]
+    
+    if len(carnival_rows) == 0:
+        print("Warning: No Carnival Monday found in data")
+        return df
+    
+    # Get the first Carnival row (Monday)
+    carnival_monday = carnival_rows.iloc[0]
+    monday_date = datetime.strptime(carnival_monday['data'], '%d/%m/%Y')
+    tuesday_date = monday_date + timedelta(days=1)
+    tuesday_str = tuesday_date.strftime('%d/%m/%Y')
+    
+    # Check if Tuesday already exists
+    if tuesday_str not in df['data'].values:
+        tuesday_row = carnival_monday.copy()
+        tuesday_row['data'] = tuesday_str
+        tuesday_row['nome'] = 'Carnaval (Terça-feira)'
+        df.loc[len(df)] = tuesday_row
+        print(f"  Added Carnival Tuesday: {tuesday_str}")
+    
+    return df
 
 
 # %%
-# Just get SP and RJ to save API calls
-states = ['SP', 'RJ']
-ibge = ['3550308', '3304557'] 
-all_holidays = []
-api_calls = 0
-
-for year in range(2018, 2021):
-    print(f"Year {year}")
-    
-    # National
-    url = f"https://feriadosapi.com/api/v1/feriados/nacionais?ano={year}"
+def fetch_national_holidays(year, api_key):
+    """Fetch national holidays for a given year"""
+    url = f"https://feriadosapi.com/api/v1/feriados/nacionais"
     headers = {"Authorization": f"Bearer {api_key}"}
-    response = requests.get(url, headers=headers)
-    api_calls += 1
+    params = {
+        "ano": year,
+        "facultativos": True  # True includes facultative holidays
+    }
+    response = requests.get(url, params=params, headers=headers)
     
+    holidays = []
     if response.status_code == 200:
         data = response.json()
-        # Access the 'feriados' key from the response
         if 'feriados' in data and isinstance(data['feriados'], list):
             for h in data['feriados']:
                 h['year'] = year
                 h['type'] = 'national'
                 h['state'] = ''
                 h['ibge_code'] = ''
-            all_holidays.extend(data['feriados'])
-            print(f"  National: {len(data['feriados'])}")
+            holidays = data['feriados']
+            print(f"  National: {len(holidays)}")
         else:
             print(f"  National: Unexpected response format")
-            print(f"  Response keys: {data.keys()}")
+    else:
+        print(f"  National: Error {response.status_code}")
+    return holidays
+
+
+# %%
+def fetch_state_holidays(states, year, api_key):
+    """Fetch state holidays for given states and year"""
+    headers = {"Authorization": f"Bearer {api_key}"}
+    all_holidays = []
     
-    # States
     for state in states:
-        url = f"https://feriadosapi.com/api/v1/feriados/estado/{state}?ano={year}"
-        response = requests.get(url, headers=headers)
-        api_calls += 1
+        url = f"https://feriadosapi.com/api/v1/feriados/estado/{state}"
+        params = {
+            "ano": year,
+            "facultativos": True  # True includes facultative holidays
+        }
+        response = requests.get(url, params=params, headers=headers)
         
         if response.status_code == 200:
             data = response.json()
-            # Access the 'feriados' key from the response
             if 'feriados' in data and isinstance(data['feriados'], list):
                 for h in data['feriados']:
                     h['year'] = year
@@ -91,22 +155,30 @@ for year in range(2018, 2021):
                 print(f"  {state}: {len(data['feriados'])}")
             else:
                 print(f"  {state}: Unexpected response format")
-                print(f"  Response keys: {data.keys()}")
+        else:
+            print(f"  {state}: Error {response.status_code}")
+    
+    return all_holidays
 
-    # Capitals
-    for code_ibge in ibge:
-        url = f"https://feriadosapi.com/api/v1/feriados/cidade/{code_ibge}?ano={year}"
-        response = requests.get(url, headers=headers)
-        api_calls += 1
 
+# %%
+def fetch_city_holidays(ibge_codes, year, api_key):
+    """Fetch city holidays for given IBGE codes and year"""
+    headers = {"Authorization": f"Bearer {api_key}"}
+    all_holidays = []
+    
+    for code_ibge in ibge_codes:
+        url = f"https://feriadosapi.com/api/v1/feriados/cidade/{code_ibge}"
+        params = {
+            "ano": year,
+            "facultativos": True  # True includes facultative holidays
+        }
+        response = requests.get(url, params=params, headers=headers)
+        
         if response.status_code == 200:
             data = response.json()
             if 'feriados' in data and isinstance(data['feriados'], list):
-                # get the state from the IBGE code
                 state_map = ibge_state_map.get(code_ibge, 'Unknown')
-
-            # Access the 'feriados' key from the response
-            if 'feriados' in data and isinstance(data['feriados'], list):
                 for h in data['feriados']:
                     h['year'] = year
                     h['type'] = 'capital'
@@ -116,32 +188,197 @@ for year in range(2018, 2021):
                 print(f"  {code_ibge}: {len(data['feriados'])}")
             else:
                 print(f"  {code_ibge}: Unexpected response format")
-                print(f"  Response keys: {data.keys()}")
-                {'error': 'Invalid IBGE code'}
         else:
-            print(f"{code_ibge}: {response.json()}") 
+            print(f"  {code_ibge}: Error {response.status_code}")
+    
+    return all_holidays
 
 
-print(response.json())
+# %%
+# Main Functions - choose whcih holidays to get from API
+# -----------------------------------------------------------------------------
+def get_all_holidays(years, states, ibge_codes, api_key):
+    """Get ALL holidays: national + state + city"""
+    all_holidays = []
+    api_calls = 0
+    
+    for year in years:
+        print(f"\nYear {year}")
+        
+        # National
+        holidays = fetch_national_holidays(year, api_key)
+        all_holidays.extend(holidays)
+        api_calls += 1
+        
+        # States
+        holidays = fetch_state_holidays(states, year, api_key)
+        all_holidays.extend(holidays)
+        api_calls += len(states)
+        
+        # Cities
+        holidays = fetch_city_holidays(ibge_codes, year, api_key)
+        all_holidays.extend(holidays)
+        api_calls += len(ibge_codes)
+    
+    print(f"\nTotal API calls: {api_calls}")
+    return all_holidays
 
 
+def get_national_only(years, api_key):
+    """Get ONLY national holidays"""
+    all_holidays = []
+    api_calls = 0
+    
+    for year in years:
+        print(f"\nYear {year}")
+        holidays = fetch_national_holidays(year, api_key)
+        all_holidays.extend(holidays)
+        api_calls += 1
+    
+    print(f"\nTotal API calls: {api_calls}")
+    return all_holidays
 
 
-print(f"\nTotal API calls: {api_calls}")
+def get_state_only(states, years, api_key):
+    """Get ONLY state holidays for given states"""
+    all_holidays = []
+    api_calls = 0
+    
+    for year in years:
+        print(f"\nYear {year}")
+        holidays = fetch_state_holidays(states, year, api_key)
+        all_holidays.extend(holidays)
+        api_calls += len(states)
+    
+    print(f"\nTotal API calls: {api_calls}")
+    return all_holidays
 
-# Save to CSV
-if all_holidays:
-    df = pd.DataFrame(all_holidays)
-    df.to_csv(export_path, index=False, encoding='utf-8')
-    print(f"Saved {len(df)} holidays to {export_path}")
+
+def get_city_only(ibge_codes, years, api_key):
+    """Get ONLY city holidays for given IBGE codes"""
+    all_holidays = []
+    api_calls = 0
+    
+    for year in years:
+        print(f"\nYear {year}")
+        holidays = fetch_city_holidays(ibge_codes, year, api_key)
+        all_holidays.extend(holidays)
+        api_calls += len(ibge_codes)
+    
+    print(f"\nTotal API calls: {api_calls}")
+    return all_holidays
+
+
+def get_national_and_state(years, states, api_key):
+    """Get national + state holidays (no cities)"""
+    all_holidays = []
+    api_calls = 0
+    
+    for year in years:
+        print(f"\nYear {year}")
+        
+        # National
+        holidays = fetch_national_holidays(year, api_key)
+        all_holidays.extend(holidays)
+        api_calls += 1
+        
+        # States
+        holidays = fetch_state_holidays(states, year, api_key)
+        all_holidays.extend(holidays)
+        api_calls += len(states)
+    
+    print(f"\nTotal API calls: {api_calls}")
+    return all_holidays
+
+
+def get_national_and_city(years, ibge_codes, api_key):
+    """Get national + city holidays (no states)"""
+    all_holidays = []
+    api_calls = 0
+    
+    for year in years:
+        print(f"\nYear {year}")
+        
+        # National
+        holidays = fetch_national_holidays(year, api_key)
+        all_holidays.extend(holidays)
+        api_calls += 1
+        
+        # Cities
+        holidays = fetch_city_holidays(ibge_codes, year, api_key)
+        all_holidays.extend(holidays)
+        api_calls += len(ibge_codes)
+    
+    print(f"\nTotal API calls: {api_calls}")
+    return all_holidays
+
+
+def save_holidays(holidays, export_=None):
+    """Save holidays to CSV and return DataFrame"""
+    if export_ is None:
+        export_ = export_path
+    
+    if not holidays:
+        print("No data to save")
+        return pd.DataFrame()
+    
+    df = pd.DataFrame(holidays)
+    
+    # Add Carnival Tuesday if Carnival exists
+    df = add_carnival_tuesday(df)
+    
+    # Sort by date
+    df['date_obj'] = pd.to_datetime(df['data'], format='%d/%m/%Y')
+    df = df.sort_values('date_obj').drop('date_obj', axis=1)
+    
+    # Save to CSV
+    df.to_csv(export_, index=False, encoding='utf-8')
+    print(f"\nSaved {len(df)} holidays to {export_}")
     
     # Show sample
     print("\nSample data:")
     print(df[['data', 'nome', 'tipo', 'year', 'type', 'state']].head())
-else:
-    print("No data collected")
+    
+    return df
 
 
 # %%
+# USAGE EXAMPLES
+# -----------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    # Load API key
+    API_KEY = load_api_key()
+    
+    # Define your parameters
+    # YEARS, STATES, and IBGE_CODES are already defined above
+    
+    # Choose ONE of the following:
+    
+    # Option 1: Get ALL holidays
+    # holidays = get_all_holidays(years, states, ibge_codes, API_KEY)
+    
+    # Option 2: Get ONLY national holidays
+    # holidays = get_national_only(years, API_KEY)
+    
+    # Option 3: Get ONLY state holidays
+    # holidays = get_state_only(states, years, API_KEY)
+    
+    # Option 4: Get ONLY city holidays
+    holidays = get_city_only(ibge_codes, years, API_KEY)
+    
+    # Option 5: Get national + state only
+    # holidays = get_national_and_state(years, states, API_KEY)
+    
+    # Option 6: Get national + city only
+    # holidays = get_national_and_city(years, ibge_codes, API_KEY)
+    
+    # Save the results
+    df = save_holidays(holidays)
+
+
+# %%
+
+
 
 
