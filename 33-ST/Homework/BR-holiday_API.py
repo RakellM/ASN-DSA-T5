@@ -21,30 +21,30 @@ export_path = os.path.join(main_dir,
 # Map IBGE codes to their respective states
 ibge_state_map = {
     # North Region (Região Norte)
-    '1200401': 'AC',  # Rio Branco
-    '1600303': 'AP',  # Macapá
-    '1302603': 'AM',  # Manaus
-    '1501402': 'PA',  # Belém
-    '1100205': 'RO',  # Porto Velho
-    '1400100': 'RR',  # Boa Vista
-    '1721000': 'TO',  # Palmas
+    # '1200401': 'AC',  # Rio Branco
+    # '1600303': 'AP',  # Macapá
+    # '1302603': 'AM',  # Manaus
+    # '1501402': 'PA',  # Belém
+    # '1100205': 'RO',  # Porto Velho
+    # '1400100': 'RR',  # Boa Vista
+    # '1721000': 'TO',  # Palmas
 
     # Northeast Region (Região Nordeste)
-    '2704302': 'AL',  # Maceió
-    '2927408': 'BA',  # Salvador
-    '2304400': 'CE',  # Fortaleza
-    '2111300': 'MA',  # São Luís
-    '2507507': 'PB',  # João Pessoa
-    '2611606': 'PE',  # Recife
-    '2211001': 'PI',  # Teresina
-    '2408102': 'RN',  # Natal
-    '2800308': 'SE',  # Aracaju
+    # '2704302': 'AL',  # Maceió
+    # '2927408': 'BA',  # Salvador
+    # '2304400': 'CE',  # Fortaleza
+    # '2111300': 'MA',  # São Luís
+    # '2507507': 'PB',  # João Pessoa
+    # '2611606': 'PE',  # Recife
+    # '2211001': 'PI',  # Teresina
+    # '2408102': 'RN',  # Natal
+    # '2800308': 'SE',  # Aracaju
 
     # Central-West Region (Região Centro-Oeste)
     '5300108': 'DF',  # Brasília (Federal District)
-    '5208707': 'GO',  # Goiânia
-    '5103403': 'MT',  # Cuiabá
-    '5002704': 'MS',  # Campo Grande
+    # '5208707': 'GO',  # Goiânia
+    # '5103403': 'MT',  # Cuiabá
+    # '5002704': 'MS',  # Campo Grande
 
     # Southeast Region (Região Sudeste)
     '3205309': 'ES',  # Vitória
@@ -61,7 +61,7 @@ ibge_state_map = {
 # %%
 # Main Parameters
 ibge_codes = list(ibge_state_map.keys())
-years = range(2018,2019)
+years = range(2018,2022)
 states = list(ibge_state_map.values())
 
 # %%
@@ -74,28 +74,56 @@ def load_api_key():
 
 
 # %% 
-# add carnaval tuesday
+# add carnaval tuesday or monday
 def add_carnival_tuesday(df):
-    """Add Carnival Tuesday by adding 1 day to Carnival Monday"""
+    """Check if Carnival is Monday or Tuesday, then add the missing day"""
     carnival_rows = df[df['nome'].str.contains('Carnaval', case=False, na=False)]
     
     if len(carnival_rows) == 0:
-        print("Warning: No Carnival Monday found in data")
+        print("Warning: No Carnival found in data")
         return df
     
-    # Get the first Carnival row (Monday)
-    carnival_monday = carnival_rows.iloc[0]
-    monday_date = datetime.strptime(carnival_monday['data'], '%d/%m/%Y')
-    tuesday_date = monday_date + timedelta(days=1)
-    tuesday_str = tuesday_date.strftime('%d/%m/%Y')
+    # Get unique years
+    years_with_carnival = carnival_rows['year'].unique()
     
-    # Check if Tuesday already exists
-    if tuesday_str not in df['data'].values:
-        tuesday_row = carnival_monday.copy()
-        tuesday_row['data'] = tuesday_str
-        tuesday_row['nome'] = 'Carnaval (Terça-feira)'
-        df.loc[len(df)] = tuesday_row
-        print(f"  Added Carnival Tuesday: {tuesday_str}")
+    for year in years_with_carnival:
+        carnival_row = carnival_rows[carnival_rows['year'] == year].iloc[0]
+        
+        # Get the date
+        carnival_date = datetime.strptime(carnival_row['data'], '%d/%m/%Y')
+        day_of_week = carnival_date.strftime('%A')  # Monday, Tuesday, etc.
+        
+        print(f"  Year {year}: Carnival is on {day_of_week}")
+        
+        # Check if it's Monday or Tuesday
+        if day_of_week == 'Monday':
+            # It's Monday, add Tuesday
+            tuesday_date = carnival_date + timedelta(days=1)
+            tuesday_str = tuesday_date.strftime('%d/%m/%Y')
+            
+            tuesday_exists = df[(df['data'] == tuesday_str) & (df['year'] == year)]
+            if len(tuesday_exists) == 0:
+                tuesday_row = carnival_row.copy()
+                tuesday_row['data'] = tuesday_str
+                tuesday_row['nome'] = 'Carnaval (Terça-feira)'
+                df.loc[len(df)] = tuesday_row
+                print(f"    Added Carnival Tuesday: {tuesday_str}")
+        
+        elif day_of_week == 'Tuesday':
+            # It's Tuesday, add Monday
+            monday_date = carnival_date - timedelta(days=1)
+            monday_str = monday_date.strftime('%d/%m/%Y')
+            
+            monday_exists = df[(df['data'] == monday_str) & (df['year'] == year)]
+            if len(monday_exists) == 0:
+                monday_row = carnival_row.copy()
+                monday_row['data'] = monday_str
+                monday_row['nome'] = 'Carnaval (Segunda-feira)'
+                df.loc[len(df)] = monday_row
+                print(f"    Added Carnival Monday: {monday_str}")
+        
+        else:
+            print(f"    Warning: Carnival is on {day_of_week} (expected Monday or Tuesday)")
     
     return df
 
@@ -313,10 +341,9 @@ def get_national_and_city(years, ibge_codes, api_key):
     return all_holidays
 
 
-def save_holidays(holidays, export_=None):
+def save_holidays(holidays, export_path_override=None):
     """Save holidays to CSV and return DataFrame"""
-    if export_ is None:
-        export_ = export_path
+    save_path = export_path_override if export_path_override is not None else export_path
     
     if not holidays:
         print("No data to save")
@@ -332,8 +359,8 @@ def save_holidays(holidays, export_=None):
     df = df.sort_values('date_obj').drop('date_obj', axis=1)
     
     # Save to CSV
-    df.to_csv(export_, index=False, encoding='utf-8')
-    print(f"\nSaved {len(df)} holidays to {export_}")
+    df.to_csv(save_path, index=False, encoding='utf-8')
+    print(f"\nSaved {len(df)} holidays to {save_path}")
     
     # Show sample
     print("\nSample data:")
@@ -376,9 +403,4 @@ if __name__ == "__main__":
     # Save the results
     df = save_holidays(holidays)
 
-
 # %%
-
-
-
-
